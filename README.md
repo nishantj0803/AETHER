@@ -327,7 +327,7 @@ IVFFlat partitions vectors into Voronoi cells and requires retraining after subs
 
 **Nishant Jain**
 - Email: [nishantj.cs.22@nitj.ac.in](mailto:nishantj0803@gmail.com)
-- GitHub: [@your-username](https://github.com/0803)
+- GitHub: [@nishantj0803](https://github.com/nishantj0803)
 
 ---
 
