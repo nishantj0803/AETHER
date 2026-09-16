@@ -323,23 +323,11 @@ IVFFlat partitions vectors into Voronoi cells and requires retraining after subs
 
 ---
 
-## 🗺️ Roadmap
-
-- [x] **Phase 1**: Local-first distributed infrastructure (Redpanda, PostgreSQL + pgvector, Prometheus, Grafana)
-- [x] **Phase 2**: Partitioned streaming ingestion, deduplication cache, DLQ, and semantic vector store
-- [x] **Phase 3**: Deterministic SLO anomaly engine & IncidentContext builder
-- [x] **Phase 4**: LangGraph multi-evidence RCA agent & confidence gating
-- [x] **Phase 5**: Zero-trust policy engine, execution adapter, and closed-loop verification
-- [ ] **Phase 6**: High-throughput Go collector rewrite & comparative benchmark (events/sec, CPU/RAM, p95 latency)
-- [ ] **Phase 7**: Kubernetes Helm charts, Terraform cloud provisioning, and ArgoCD GitOps sync
-
----
-
 ## 👤 Author
 
 **Nishant Jain**
-- Email: [nishantj.cs.22@nitj.ac.in](mailto:nishantj.cs.22@nitj.ac.in)
-- GitHub: [@your-username](https://github.com/)
+- Email: [nishantj.cs.22@nitj.ac.in](mailto:nishantj0803@gmail.com)
+- GitHub: [@your-username](https://github.com/0803)
 
 ---
 
