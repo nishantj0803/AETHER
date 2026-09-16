@@ -1,0 +1,119 @@
+version: '3.8'
+
+services:
+  # 1. Redpanda (Ultra-lightweight Kafka-compatible streaming engine)
+  redpanda:
+    image: docker.redpanda.com/redpandadata/redpanda:v24.1.8
+    container_name: aether-redpanda
+    command:
+      - redpanda start
+      - --smp 1
+      - --memory 1G
+      - --overprovisioned
+      - --kafka-addr internal://0.0.0.0:9092,external://0.0.0.0:19092
+      - --advertise-kafka-addr internal://redpanda:9092,external://localhost:19092
+      - --pandaproxy-addr 0.0.0.0:8082
+      - --advertise-pandaproxy-addr localhost:8082
+      - --schema-registry-addr 0.0.0.0:8081
+    ports:
+      - "19092:19092"   # External Kafka API (host access)
+      - "9092:9092"     # Internal Kafka API
+      - "8081:8081"     # Schema Registry
+      - "8082:8082"     # Pandaproxy HTTP
+      - "9644:9644"     # Admin API
+    volumes:
+      - redpanda_data:/var/lib/redpanda/data
+    healthcheck:
+      test: ["CMD-SHELL", "rpk cluster health | grep -E 'Healthy|OK' || exit 0"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # 2. Redpanda Console (Real-time UI for topics, consumers, and message streams)
+  redpanda-console:
+    image: docker.redpanda.com/redpandadata/console:v2.5.2
+    container_name: aether-redpanda-console
+    ports:
+      - "8080:8080"
+    environment:
+      KAFKA_BROKERS: "redpanda:9092"
+    depends_on:
+      - redpanda
+
+  # 3. PostgreSQL 16 with pgvector extension
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: aether-postgres
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: aether_db
+      POSTGRES_USER: aether_user
+      POSTGRES_PASSWORD: aether_password
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./scripts/init_db.sql:/docker-entrypoint-initdb.d/init_db.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U aether_user -d aether_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # 4. Prometheus (Deterministic SLO alerting & 5s scraping engine)
+  prometheus:
+    image: prom/prometheus:v2.51.0
+    container_name: aether-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./config/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./config/prometheus/alert_rules.yml:/etc/prometheus/alert_rules.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --web.enable-lifecycle
+    restart: unless-stopped
+
+  # 5. Grafana (Real-time dashboards for metrics, latency, and remediation)
+  grafana:
+    image: grafana/grafana:10.4.1
+    container_name: aether-grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - ./config/grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro
+      - ./config/grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./config/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana_data:/var/lib/grafana
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+
+  # 6. Payment Demo Microservice (FastAPI + OpenTelemetry + Fault Injection Harness)
+  demo-service:
+    build:
+      context: ./services/demo_service
+      dockerfile: Dockerfile
+    container_name: aether-demo-service
+    ports:
+      - "8000:8000"
+    environment:
+      SERVICE_NAME: payment-service
+      KAFKA_BOOTSTRAP_SERVERS: redpanda:9092
+      DATABASE_URL: postgresql://aether_user:aether_password@postgres:5432/aether_db
+      PROMETHEUS_MULTIPROC_DIR: /tmp
+    depends_on:
+      - redpanda
+      - postgres
+    restart: unless-stopped
+
+volumes:
+  redpanda_data:
+  postgres_data:
+  prometheus_data:
+  grafana_data:

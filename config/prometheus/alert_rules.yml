@@ -1,0 +1,42 @@
+groups:
+  - name: aether_slo_alerts
+    rules:
+      - alert: ServiceHttpErrorRateHigh
+        expr: (sum(rate(http_requests_total{status=~"5.."}[1m])) or vector(0)) / (sum(rate(http_requests_total[1m])) > 0) > 0.05
+        for: 10s
+        labels:
+          severity: critical
+          service: payment-service
+        annotations:
+          summary: "HTTP 500 error rate breached SLO (> 5%)"
+          description: "Service {{ $labels.service }} has an error rate of {{ $value | humanizePercentage }} over the last 1m."
+
+      - alert: ServiceLatencyHigh
+        expr: histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket[1m])) by (le)) > 1.5
+        for: 10s
+        labels:
+          severity: warning
+          service: payment-service
+        annotations:
+          summary: "p95 latency exceeded threshold (> 1.5s)"
+          description: "Service {{ $labels.service }} p95 latency is {{ $value | humanizeDuration }}."
+
+      - alert: PaymentFailureBurst
+        expr: sum(rate(payment_transactions_total{status="failed"}[1m])) > 2
+        for: 10s
+        labels:
+          severity: critical
+          service: payment-service
+        annotations:
+          summary: "Payment failure burst detected"
+          description: "Failed payments are occurring at {{ $value | humanize }} ops/sec."
+
+      - alert: MemorySaturationWarning
+        expr: service_memory_usage_bytes > 300000000  # 300MB
+        for: 10s
+        labels:
+          severity: critical
+          service: payment-service
+        annotations:
+          summary: "Memory consumption approaching threshold"
+          description: "Payment service memory heap reached {{ $value | humanize1024 }}B."
