@@ -11,17 +11,21 @@ import (
 	"github.com/segmentio/kafka-go"
 )
 
+type pendingItem struct {
+	record  *LogRecord
+	message kafka.Message
+}
+
 // Consumer manages the multi-threaded ingestion pipeline from Redpanda/Kafka to PostgreSQL.
 type Consumer struct {
-	config     *Config
-	db         *DatabaseClient
-	dedupCache *LRUDeduplicationCache
-	reader     *kafka.Reader
-	dlqWriter  *kafka.Writer
+	config      *Config
+	db          *DatabaseClient
+	dedupCache  *LRUDeduplicationCache
+	reader      *kafka.Reader
+	dlqWriter   *kafka.Writer
 
-	rawChan    chan kafka.Message
-	batchChan  chan *LogRecord
-	commitChan chan kafka.Message
+	rawChan     chan kafka.Message
+	pendingChan chan pendingItem
 
 	wg     sync.WaitGroup
 	ctx    context.Context
@@ -50,16 +54,15 @@ func NewConsumer(ctx context.Context, cfg *Config, db *DatabaseClient, dedup *LR
 	}
 
 	return &Consumer{
-		config:     cfg,
-		db:         db,
-		dedupCache: dedup,
-		reader:     reader,
-		dlqWriter:  dlqWriter,
-		rawChan:    make(chan kafka.Message, cfg.BatchSize*4),
-		batchChan:  make(chan *LogRecord, cfg.BatchSize*4),
-		commitChan: make(chan kafka.Message, cfg.BatchSize*4),
-		ctx:        cCtx,
-		cancel:     cancel,
+		config:      cfg,
+		db:          db,
+		dedupCache:  dedup,
+		reader:      reader,
+		dlqWriter:   dlqWriter,
+		rawChan:     make(chan kafka.Message, cfg.BatchSize*4),
+		pendingChan: make(chan pendingItem, cfg.BatchSize*4),
+		ctx:         cCtx,
+		cancel:      cancel,
 	}
 }
 
@@ -73,11 +76,21 @@ func (c *Consumer) Start() {
 	go c.fetchLoop()
 
 	// 2. Start worker pool
+	var workerWg sync.WaitGroup
 	for i := 0; i < c.config.WorkerCount; i++ {
-		c.wg.Add(1)
-		go c.workerLoop(i)
+		workerWg.Add(1)
+		go func(workerID int) {
+			defer workerWg.Done()
+			c.workerLoop(workerID)
+		}(i)
 	}
 	activeWorkersGauge.Set(float64(c.config.WorkerCount))
+
+	// Close pendingChan once all workers finish
+	go func() {
+		workerWg.Wait()
+		close(c.pendingChan)
+	}()
 
 	// 3. Start batch database flusher
 	c.wg.Add(1)
@@ -123,10 +136,8 @@ func (c *Consumer) fetchLoop() {
 	}
 }
 
-// workerLoop parses JSON, validates required fields, performs deduplication checks, and enqueues records.
+// workerLoop parses JSON, validates required fields, performs deduplication checks, and enqueues paired records.
 func (c *Consumer) workerLoop(workerID int) {
-	defer c.wg.Done()
-
 	for msg := range c.rawChan {
 		var record LogRecord
 		if err := json.Unmarshal(msg.Value, &record); err != nil {
@@ -145,8 +156,10 @@ func (c *Consumer) workerLoop(workerID int) {
 			continue
 		}
 
-		c.batchChan <- &record
-		c.commitChan <- msg
+		c.pendingChan <- pendingItem{
+			record:  &record,
+			message: msg,
+		}
 	}
 }
 
@@ -194,15 +207,13 @@ func (c *Consumer) batchFlushLoop() {
 			flush()
 			return
 
-		case rec, ok := <-c.batchChan:
+		case item, ok := <-c.pendingChan:
 			if !ok {
 				flush()
 				return
 			}
-			batch = append(batch, rec)
-			if msg, ok := <-c.commitChan; ok {
-				messagesToCommit = append(messagesToCommit, msg)
-			}
+			batch = append(batch, item.record)
+			messagesToCommit = append(messagesToCommit, item.message)
 
 			if len(batch) >= c.config.BatchSize {
 				flush()

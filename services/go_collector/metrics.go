@@ -2,12 +2,15 @@ package main
 
 import (
 	"net/http"
+	"sync"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 var (
+	metricsOnce sync.Once
+
 	eventsTotal = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "aether_collector_events_total",
@@ -48,11 +51,13 @@ var (
 )
 
 func initMetrics() {
-	prometheus.MustRegister(eventsTotal)
-	prometheus.MustRegister(batchDuration)
-	prometheus.MustRegister(batchSizeHist)
-	prometheus.MustRegister(activeWorkersGauge)
-	prometheus.MustRegister(dedupCacheSizeGauge)
+	metricsOnce.Do(func() {
+		prometheus.MustRegister(eventsTotal)
+		prometheus.MustRegister(batchDuration)
+		prometheus.MustRegister(batchSizeHist)
+		prometheus.MustRegister(activeWorkersGauge)
+		prometheus.MustRegister(dedupCacheSizeGauge)
+	})
 }
 
 func startMetricsServer(port string) *http.Server {
