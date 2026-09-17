@@ -94,3 +94,18 @@ CREATE TABLE IF NOT EXISTS remediation_audit_log (
 );
 
 CREATE INDEX IF NOT EXISTS idx_remediation_incident ON remediation_audit_log (incident_id);
+
+-- 5. Incident Lifecycle State Transitions (Audit Trail & State Machine History)
+CREATE TABLE IF NOT EXISTS incident_transitions (
+    id BIGSERIAL PRIMARY KEY,
+    incident_id VARCHAR(64) NOT NULL REFERENCES incidents(incident_id) ON DELETE CASCADE,
+    from_state VARCHAR(30) NOT NULL,
+    to_state VARCHAR(30) NOT NULL,
+    actor VARCHAR(100) NOT NULL DEFAULT 'system',
+    reason TEXT,
+    metadata JSONB DEFAULT '{}'::jsonb,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_transitions_incident ON incident_transitions (incident_id, created_at ASC);
+CREATE INDEX IF NOT EXISTS idx_transitions_to_state ON incident_transitions (to_state);

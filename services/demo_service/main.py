@@ -16,12 +16,23 @@ from services.demo_service.telemetry import (
     tracer
 )
 from services.demo_service.faults import fault_engine
+from services.remediation_controller.api import router as incident_router
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Initialize Kafka connection if broker is available
     await telemetry.init_kafka()
     telemetry.log("INFO", "Demo Payment Service initialized and ready to serve traffic")
+
+    # Automatically reconcile any in-flight incidents interrupted by prior crash/restart
+    try:
+        from services.remediation_controller.controller import remediation_controller
+        recovered = await remediation_controller.recover_in_flight_incidents()
+        if recovered:
+            telemetry.log("WARN", f"Startup crash recovery: reconciled {len(recovered)} in-flight incidents", metadata={"recovered": recovered})
+    except Exception as e:
+        telemetry.log("ERROR", f"Failed to execute startup crash reconciliation: {e}")
+
     yield
     await telemetry.close_kafka()
 
@@ -30,6 +41,7 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan
 )
+app.include_router(incident_router)
 
 # ----------------- Data Models -----------------
 class PaymentRequest(BaseModel):

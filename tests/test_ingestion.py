@@ -47,6 +47,7 @@ def test_lru_deduplication_cache():
 
 def test_consumer_deduplication():
     import asyncio
+    from services.ingestion_worker.consumer import ProcessingResult
 
     async def _test():
         consumer = AetherLogConsumer(bootstrap_servers="mock:9092")
@@ -61,17 +62,20 @@ def test_consumer_deduplication():
 
         # First arrival
         res1 = await consumer.process_record(record)
-        assert res1 is True
+        assert res1 == ProcessingResult.PROCESS_SUCCESS
+        assert res1.is_terminal is True
 
         # Duplicate arrival with same event_id
         res2 = await consumer.process_record(record)
-        assert res2 is True
+        assert res2 == ProcessingResult.DUPLICATE
+        assert res2.is_terminal is True
         assert consumer.deduped_count == 1
 
     asyncio.run(_test())
 
 def test_consumer_dlq_routing_on_missing_event_id():
     import asyncio
+    from services.ingestion_worker.consumer import ProcessingResult
 
     async def _test():
         consumer = AetherLogConsumer(bootstrap_servers="mock:9092")
@@ -84,8 +88,26 @@ def test_consumer_dlq_routing_on_missing_event_id():
         }
 
         res = await consumer.process_record(bad_record)
-        assert res is False
+        assert res == ProcessingResult.DLQ_SUCCESS
+        assert res.is_terminal is True
         assert consumer.dlq_count == 1
 
     asyncio.run(_test())
+
+def test_consumer_contiguous_offset_halts_on_retry():
+    import asyncio
+    from unittest.mock import AsyncMock, patch
+    from services.ingestion_worker.consumer import ProcessingResult
+
+    async def _test():
+        consumer = AetherLogConsumer(bootstrap_servers="mock:9092", max_retries=1)
+
+        # Mock DB failure for a transient database connection issue
+        with patch("services.ingestion_worker.db.db.insert_log", new=AsyncMock(side_effect=Exception("DB pool timeout"))):
+            res = await consumer.process_record({"event_id": "evt_fail_1", "message": "fail"})
+            assert res == ProcessingResult.PROCESS_RETRY
+            assert res.is_terminal is False
+
+    asyncio.run(_test())
+
 

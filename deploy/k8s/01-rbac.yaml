@@ -1,0 +1,40 @@
+# Least-Privilege RBAC for Aether Autonomous Remediation Controller
+# Granting STRICTLY bounded permissions:
+# - Can patch deployment image versions and replica scale in 'aether-apps' namespace.
+# - Zero cluster-admin permissions.
+# - Zero secret-reading or cluster-wide access.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: aether-controller-sa
+  namespace: aether-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: aether-remediation-role
+  namespace: aether-apps
+rules:
+  # 1. Permission to query and scale deployments
+  - apiGroups: ["apps"]
+    resources: ["deployments", "deployments/scale"]
+    verbs: ["get", "list", "watch", "update", "patch"]
+
+  # 2. Permission to restart pods via graceful deletion
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: aether-remediation-binding
+  namespace: aether-apps
+subjects:
+  - kind: ServiceAccount
+    name: aether-controller-sa
+    namespace: aether-system
+roleRef:
+  kind: Role
+  name: aether-remediation-role
+  apiGroup: rbac.authorization.k8s.io

@@ -132,14 +132,19 @@ def test_gemini_rca_mocked_llm_response():
         trigger_reason="Error spike",
         metric_snapshot={"http_5xx_rate": 0.28},
         detected_at=time.time(),
-        deployment_metadata={"version": "v1.1.0-bad"}
+        deployment_metadata={
+            "version": "v1.1.0-bad",
+            "deployed_at": time.time() - 60,
+            "config": {"db_timeout_ms": 50}
+        },
+        recent_errors=[{"error": "Database connection timeout", "similarity": 0.95}]
     )
 
     with patch("httpx.Client.post", return_value=mock_response):
         diagnosis = agent.analyze(incident)
 
     assert diagnosis.status == "CONFIRMED"
-    assert diagnosis.confidence_score == 0.98
+    assert diagnosis.confidence_score >= 0.95
     assert "Database connection timeout regression" in diagnosis.root_cause
     assert diagnosis.remediation_plan is not None
     assert diagnosis.remediation_plan.action_type == RemediationActionType.ROLLBACK_DEPLOYMENT
@@ -188,17 +193,74 @@ def test_gemini_rca_model_cascade_fallback():
         service_name="payment-service",
         severity="P2",
         trigger_rule="HighP95Latency",
-        trigger_reason="Latency spike",
-        metric_snapshot={"p95_latency_seconds": 1.6},
-        detected_at=time.time()
+        trigger_reason="Latency spike: p95=1.6s",
+        metric_snapshot={"p95_latency_seconds": 1.6, "http_5xx_rate": 0.15},
+        detected_at=time.time(),
+        deployment_metadata={
+            "version": "v1.1.0-bad",
+            "deployed_at": time.time() - 120,
+            "config": {"db_timeout_ms": 50}
+        },
+        recent_errors=[{"error": "Slow pool acquire", "similarity": 0.90}]
     )
 
     with patch("httpx.Client.post", side_effect=[resp_404, resp_200]):
         diagnosis = agent.analyze(incident)
 
     assert diagnosis.status == "CONFIRMED"
+    assert diagnosis.confidence_score >= 0.85
     assert "Cascade success" in diagnosis.root_cause
     assert diagnosis.remediation_plan.action_type == RemediationActionType.SCALE_REPLICAS
+
+def test_platform_corroboration_blocks_overconfident_llm():
+    """Verify safety barrier: platform overrides uncorroborated LLM high-confidence claim."""
+    import json
+    from unittest.mock import patch, MagicMock
+    from services.rca_agent.graph import GeminiRCAClient, AetherRCAAgent
+
+    mock_llm_json = {
+        "root_cause": "Uncorroborated speculative issue",
+        "evidence_sources": ["LLM intuition"],
+        "causality_chain": "Speculative guess",
+        "confidence_score": 0.99,
+        "status": "CONFIRMED",
+        "remediation_plan": {
+            "action_type": "ROLLBACK_DEPLOYMENT",
+            "target_service": "unknown-service",
+            "parameters": {"target_version": "v1.0.0"},
+            "rationale": "Speculative rollback",
+            "confidence_score": 0.99,
+            "risk_level": "HIGH"
+        }
+    }
+
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+    mock_response.json.return_value = {
+        "candidates": [{"content": {"parts": [{"text": json.dumps(mock_llm_json)}]}}]
+    }
+
+    gemini_client = GeminiRCAClient(api_key="mock-api-key", primary_model="gemini-3.7-flash")
+    agent = AetherRCAAgent(gemini_client=gemini_client)
+
+    # Incident has NO recent deployment, NO error logs, low error rate, unknown service
+    incident = IncidentContext(
+        incident_id="INC-UNVERIFIED-001",
+        service_name="unknown-service",
+        severity="P3",
+        trigger_rule="CustomRule",
+        trigger_reason="Minor jitter",
+        metric_snapshot={"http_5xx_rate": 0.01},
+        detected_at=time.time()
+    )
+
+    with patch("httpx.Client.post", return_value=mock_response):
+        diagnosis = agent.analyze(incident)
+
+    # Safety assertion: Platform corroboration engine demotes it to HUMAN_TRIAGE_REQUIRED
+    assert diagnosis.confidence_score < 0.80
+    assert diagnosis.status == "HUMAN_TRIAGE_REQUIRED"
+    assert any("Deterministic Corroboration" in src for src in diagnosis.evidence_sources)
 
 def test_gemini_rca_network_failure_falls_back_to_deterministic():
     from unittest.mock import patch
@@ -251,4 +313,50 @@ def test_gemini_rca_async_interface():
     diagnosis = asyncio.run(rca_agent.analyze_async(incident))
     assert diagnosis.status == "CONFIRMED"
     assert diagnosis.remediation_plan.action_type == RemediationActionType.ROLLBACK_DEPLOYMENT
+
+def test_deterministic_corroboration_action_aware_scoring():
+    from services.rca_agent.graph import corroboration_engine
+    # Test Rollback profile
+    rollback_incident = IncidentContext(
+        incident_id="INC-CORROB-01",
+        service_name="payment-service",
+        severity="P1",
+        trigger_rule="HighHttpErrorRate",
+        trigger_reason="HTTP 5xx rate = 22%",
+        metric_snapshot={"http_5xx_rate": 0.22},
+        detected_at=time.time(),
+        deployment_metadata={"version": "v1.1.0-bad", "deployed_at": time.time() - 45, "config": {"db_timeout_ms": 50}}
+    )
+    score_rb, breakdown_rb = corroboration_engine.evaluate(rollback_incident, RemediationActionType.ROLLBACK_DEPLOYMENT)
+    assert score_rb >= 0.85
+    assert "deployment" in breakdown_rb
+
+    # Test Restart profile (Memory saturation)
+    restart_incident = IncidentContext(
+        incident_id="INC-CORROB-02",
+        service_name="payment-service",
+        severity="P2",
+        trigger_rule="HighMemoryUsage",
+        trigger_reason="Process memory heap saturation",
+        metric_snapshot={"memory_bytes": 450 * 1024 * 1024},
+        detected_at=time.time()
+    )
+    score_rst, breakdown_rst = corroboration_engine.evaluate(restart_incident, RemediationActionType.RESTART_CONTAINER)
+    assert score_rst >= 0.85
+    assert "memory_saturation" in breakdown_rst
+
+    # Test Scale profile (Latency spike)
+    scale_incident = IncidentContext(
+        incident_id="INC-CORROB-03",
+        service_name="payment-service",
+        severity="P2",
+        trigger_rule="HighP95Latency",
+        trigger_reason="Latency spike: p95=1.8s",
+        metric_snapshot={"p95_latency_seconds": 1.8, "http_5xx_rate": 0.08},
+        detected_at=time.time()
+    )
+    score_sc, breakdown_sc = corroboration_engine.evaluate(scale_incident, RemediationActionType.SCALE_REPLICAS)
+    assert score_sc >= 0.80
+    assert "latency_degradation" in breakdown_sc
+
 

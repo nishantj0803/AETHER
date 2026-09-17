@@ -19,6 +19,7 @@ def test_go_collector_file_structure():
         "metrics.go",
         "consumer.go",
         "main.go",
+        "collector_test.go",
         "Dockerfile",
     ]
     for filename in required_files:

@@ -2,9 +2,10 @@ import json
 import logging
 import os
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 import httpx
 
+from dataclasses import dataclass
 from services.anomaly_detector.detector import IncidentContext
 from services.rca_agent.schema import RCADiagnosis, RemediationActionType, RemediationSpec
 
@@ -12,6 +13,143 @@ logger = logging.getLogger("aether.rca_agent")
 
 DEFAULT_PRIMARY_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.7-flash")
 DEFAULT_FALLBACK_MODELS = ["gemini-3.8-flash", "gemini-2.5-flash", "gemini-2.0-flash"]
+
+@dataclass
+class EvidenceCorroborationConfig:
+    """
+    Configurable scoring weights for deterministic platform evidence corroboration.
+    Calibrated against observability evidence rather than trusting unverified LLM output.
+    """
+    deployment_weight: float = 0.30       # Recent deployment + config delta
+    error_signature_weight: float = 0.25   # pgvector semantic error signature match
+    metric_magnitude_weight: float = 0.20  # Breach magnitude relative to SLO
+    trace_severity_weight: float = 0.15    # Trace 5xx error correlation
+    historical_similarity_weight: float = 0.10 # Historical incident match
+
+class DeterministicCorroborationEngine:
+    """
+    Platform-owned corroboration engine.
+    Computes a deterministic, evidence-backed confidence score for an incident,
+    preventing hallucinated or overconfident LLM claims from bypassing policy guardrails.
+    """
+    def __init__(self, config: Optional[EvidenceCorroborationConfig] = None):
+        self.config = config or EvidenceCorroborationConfig()
+
+    def evaluate(self, incident: IncidentContext, proposed_action: Optional[RemediationActionType] = None) -> Tuple[float, Dict[str, float]]:
+        scores: Dict[str, float] = {}
+        deployment = incident.deployment_metadata or {}
+        metrics = incident.metric_snapshot or {}
+        recent_errors = incident.recent_errors or []
+
+        if proposed_action == RemediationActionType.RESTART_CONTAINER or "Memory" in incident.trigger_rule or "memory" in incident.trigger_reason.lower():
+            # Resource saturation scoring profile
+            # 1. Memory Saturation Magnitude (up to 0.45)
+            mem_bytes = metrics.get("memory_bytes", 0)
+            if mem_bytes > 400 * 1024 * 1024:
+                scores["memory_saturation"] = 0.45
+            elif mem_bytes > 300 * 1024 * 1024:
+                scores["memory_saturation"] = 0.40
+            elif mem_bytes > 200 * 1024 * 1024:
+                scores["memory_saturation"] = 0.25
+            else:
+                scores["memory_saturation"] = 0.05
+
+            # 2. Trigger Rule Match (up to 0.25)
+            if "HighMemoryUsage" in incident.trigger_rule or "OOM" in incident.trigger_rule:
+                scores["trigger_rule"] = 0.25
+            else:
+                scores["trigger_rule"] = 0.10
+
+            # 3. Process Telemetry Continuity (up to 0.15)
+            if "Process memory" in incident.trigger_reason or "heap" in incident.trigger_reason.lower():
+                scores["process_telemetry"] = 0.15
+            else:
+                scores["process_telemetry"] = 0.08
+
+            # 4. Target Boundary / Whitelist Match (up to 0.15)
+            if incident.service_name in ("payment-service", "checkout-service", "order-service"):
+                scores["target_boundary"] = 0.15
+            else:
+                scores["target_boundary"] = 0.0
+
+        elif proposed_action == RemediationActionType.SCALE_REPLICAS or "Latency" in incident.trigger_rule or "latency" in incident.trigger_reason.lower():
+            # Capacity / concurrency exhaustion profile
+            p95 = metrics.get("p95_latency_seconds", 0.0)
+            if p95 > 1.5:
+                scores["latency_degradation"] = 0.40
+            elif p95 > 0.8:
+                scores["latency_degradation"] = 0.30
+            else:
+                scores["latency_degradation"] = 0.10
+
+            err_rate = metrics.get("http_5xx_rate", 0.0)
+            if err_rate > 0.10:
+                scores["error_breach"] = 0.25
+            elif err_rate > 0.02:
+                scores["error_breach"] = 0.15
+            else:
+                scores["error_breach"] = 0.05
+
+            if recent_errors:
+                top_sim = max((e.get("similarity", 0.85) for e in recent_errors), default=0.85)
+                scores["log_signature"] = min(1.0, float(top_sim)) * 0.20
+            else:
+                scores["log_signature"] = 0.15
+
+            if incident.service_name in ("payment-service", "checkout-service", "order-service"):
+                scores["target_boundary"] = 0.15
+            else:
+                scores["target_boundary"] = 0.0
+
+        else:
+            # Default / ROLLBACK_DEPLOYMENT profile
+            # 1. Deployment Correlation Score (up to 0.30)
+            dep_time = deployment.get("deployed_at", 0)
+            config = deployment.get("config", {})
+            is_recent = (time.time() - dep_time) < 1800 if dep_time else False
+            has_config_delta = bool(config and ("timeout" in str(config) or "bad" in deployment.get("version", "")))
+            if is_recent and has_config_delta:
+                scores["deployment"] = 1.0 * self.config.deployment_weight
+            elif is_recent:
+                scores["deployment"] = 0.5 * self.config.deployment_weight
+            else:
+                scores["deployment"] = 0.0
+
+            # 2. Error Signature Match (pgvector / semantic logs) (up to 0.25)
+            if recent_errors and len(recent_errors) > 0:
+                top_sim = max((e.get("similarity", 0.85) for e in recent_errors), default=0.85)
+                scores["error_signature"] = min(1.0, float(top_sim)) * self.config.error_signature_weight
+            elif "Error" in incident.trigger_rule or "500" in incident.trigger_reason or "timeout" in incident.trigger_reason.lower():
+                scores["error_signature"] = 0.90 * self.config.error_signature_weight
+            else:
+                scores["error_signature"] = 0.0
+
+            # 3. Metric Breach Magnitude (up to 0.20)
+            err_rate = metrics.get("http_5xx_rate", 0.0)
+            mem_bytes = metrics.get("memory_bytes", 0)
+            if err_rate > 0.10:
+                scores["metric_magnitude"] = 1.0 * self.config.metric_magnitude_weight
+            elif err_rate > 0.05 or mem_bytes > 300 * 1024 * 1024:
+                scores["metric_magnitude"] = 0.80 * self.config.metric_magnitude_weight
+            else:
+                scores["metric_magnitude"] = 0.20 * self.config.metric_magnitude_weight
+
+            # 4. Trace & Error Severity (up to 0.15)
+            if "HighHttpErrorRate" in incident.trigger_rule or "500" in incident.trigger_reason:
+                scores["trace_severity"] = 1.0 * self.config.trace_severity_weight
+            else:
+                scores["trace_severity"] = 0.60 * self.config.trace_severity_weight
+
+            # 5. Historical / Target Boundary Match (up to 0.10)
+            if incident.service_name in ("payment-service", "checkout-service", "order-service"):
+                scores["historical_similarity"] = 1.0 * self.config.historical_similarity_weight
+            else:
+                scores["historical_similarity"] = 0.0
+
+        total_confidence = sum(scores.values())
+        return round(total_confidence, 2), scores
+
+corroboration_engine = DeterministicCorroborationEngine()
 
 class GeminiRCAClient:
     """
@@ -102,6 +240,8 @@ Safety Rules:
 
         remediation_plan = None
         plan_dict = data.get("remediation_plan")
+        action_type = None
+
         if plan_dict and isinstance(plan_dict, dict):
             action_type_str = plan_dict.get("action_type", "")
             try:
@@ -109,29 +249,35 @@ Safety Rules:
             except ValueError:
                 action_type = RemediationActionType.ROLLBACK_DEPLOYMENT
 
-            plan_confidence = float(plan_dict.get("confidence_score", data.get("confidence_score", 0.90)))
+        # Platform-owned deterministic evidence corroboration replaces raw LLM self-confidence
+        calibrated_confidence, evidence_scores = corroboration_engine.evaluate(incident, action_type)
+        logger.info(f"Platform calibrated confidence: {calibrated_confidence:.2f} (evidence breakdown: {evidence_scores})")
+
+        if plan_dict and isinstance(plan_dict, dict) and action_type:
             remediation_plan = RemediationSpec.create(
                 incident_id=incident.incident_id,
                 action_type=action_type,
                 target_service=plan_dict.get("target_service", incident.service_name),
                 parameters=plan_dict.get("parameters", {}),
                 rationale=plan_dict.get("rationale", data.get("causality_chain", "")),
-                confidence_score=plan_confidence,
+                confidence_score=calibrated_confidence,
                 risk_level=plan_dict.get("risk_level", "LOW")
             )
 
         status = data.get("status", "CONFIRMED")
-        confidence_score = float(data.get("confidence_score", 0.50))
-        if confidence_score < 0.80 and status == "CONFIRMED":
+        if calibrated_confidence < 0.80 and status == "CONFIRMED":
             status = "HUMAN_TRIAGE_REQUIRED"
+
+        evidence_sources = data.get("evidence_sources", ["Prometheus Metrics", "Deployment Change Log"])
+        evidence_sources.append(f"Deterministic Corroboration ({calibrated_confidence:.2f})")
 
         return RCADiagnosis(
             incident_id=incident.incident_id,
             service_name=incident.service_name,
             root_cause=data.get("root_cause", "Automated diagnosis by Gemini SRE Agent"),
-            evidence_sources=data.get("evidence_sources", ["Prometheus Metrics", "Deployment Change Log"]),
+            evidence_sources=evidence_sources,
             causality_chain=data.get("causality_chain", ""),
-            confidence_score=confidence_score,
+            confidence_score=calibrated_confidence,
             remediation_plan=remediation_plan,
             status=status
         )
@@ -248,8 +394,11 @@ class AetherRCAAgent:
         is_bad_version = "bad" in dep_version or config.get("db_timeout_ms", 2000) < 100
 
         if is_recent_deployment and is_bad_version:
+            action_type = RemediationActionType.ROLLBACK_DEPLOYMENT
+            calibrated_confidence, evidence_scores = corroboration_engine.evaluate(incident, action_type)
             evidence_sources.append("Semantic Log Store (pgvector)")
             evidence_sources.append("OpenTelemetry Traces")
+            evidence_sources.append(f"Deterministic Corroboration ({calibrated_confidence:.2f})")
 
             causality = (
                 f"Deployment regression detected: Version '{dep_version}' was deployed at T-{(time.time()-dep_time):.0f}s. "
@@ -259,13 +408,15 @@ class AetherRCAAgent:
 
             plan = RemediationSpec.create(
                 incident_id=incident.incident_id,
-                action_type=RemediationActionType.ROLLBACK_DEPLOYMENT,
+                action_type=action_type,
                 target_service=incident.service_name,
                 parameters={"target_version": "v1.0.0", "reason": "Config regression rollback"},
                 rationale=causality,
-                confidence_score=0.96,
+                confidence_score=calibrated_confidence,
                 risk_level="LOW"
             )
+
+            status = "CONFIRMED" if calibrated_confidence >= self.confidence_threshold else "HUMAN_TRIAGE_REQUIRED"
 
             return RCADiagnosis(
                 incident_id=incident.incident_id,
@@ -273,46 +424,55 @@ class AetherRCAAgent:
                 root_cause=f"Configuration regression in deployment {dep_version} (db_timeout_ms too aggressive)",
                 evidence_sources=evidence_sources,
                 causality_chain=causality,
-                confidence_score=0.96,
+                confidence_score=calibrated_confidence,
                 remediation_plan=plan,
-                status="CONFIRMED"
+                status=status
             )
 
         # 2. Check Memory Saturation
         mem_bytes = metrics.get("memory_bytes", 0)
         if mem_bytes > 300 * 1024 * 1024:  # > 300MB
+            action_type = RemediationActionType.RESTART_CONTAINER
+            calibrated_confidence, evidence_scores = corroboration_engine.evaluate(incident, action_type)
+            evidence_sources.append("Prometheus Process Metrics")
+            evidence_sources.append("Process Memory Gauge")
+            evidence_sources.append(f"Deterministic Corroboration ({calibrated_confidence:.2f})")
+
             causality = (
                 f"Heap memory saturation: Process RSS reached {mem_bytes / (1024*1024):.1f}MB. "
                 f"Correlated with monotonic heap growth during payment execution loop."
             )
             plan = RemediationSpec.create(
                 incident_id=incident.incident_id,
-                action_type=RemediationActionType.RESTART_CONTAINER,
+                action_type=action_type,
                 target_service=incident.service_name,
                 parameters={"graceful_timeout_seconds": 15},
                 rationale=causality,
-                confidence_score=0.91,
+                confidence_score=calibrated_confidence,
                 risk_level="LOW"
             )
+            status = "CONFIRMED" if calibrated_confidence >= self.confidence_threshold else "HUMAN_TRIAGE_REQUIRED"
             return RCADiagnosis(
                 incident_id=incident.incident_id,
                 service_name=incident.service_name,
                 root_cause="Unbounded memory accumulation in heap buffer",
-                evidence_sources=["Prometheus Process Metrics", "Process Memory Gauge"],
+                evidence_sources=evidence_sources,
                 causality_chain=causality,
-                confidence_score=0.91,
+                confidence_score=calibrated_confidence,
                 remediation_plan=plan,
-                status="CONFIRMED"
+                status=status
             )
 
         # 3. Ambiguous / Unknown Incident (Human Triage)
+        calibrated_confidence, evidence_scores = corroboration_engine.evaluate(incident, None)
+        evidence_sources.append(f"Deterministic Corroboration ({calibrated_confidence:.2f})")
         return RCADiagnosis(
             incident_id=incident.incident_id,
             service_name=incident.service_name,
             root_cause="Insufficient correlation between metrics, logs, and deployment events",
             evidence_sources=evidence_sources,
             causality_chain="Error rate elevated but no correlating deployment change or resource saturation identified.",
-            confidence_score=0.45,
+            confidence_score=calibrated_confidence,
             remediation_plan=None,
             status="HUMAN_TRIAGE_REQUIRED"
         )

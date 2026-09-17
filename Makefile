@@ -69,3 +69,16 @@ benchmark-collector:
 locust:
 	.venv/bin/locust -f benchmarks/locustfile.py --host http://localhost:8000
 
+deploy-kind:
+	./scripts/deploy_kind.sh
+
+chaos-kafka:
+	bash chaos/experiment_kafka_kill.sh
+
+chaos-postgres:
+	bash chaos/experiment_postgres_pause.sh
+
+chaos-all:
+	PYTHONPATH=. .venv/bin/python3 chaos/chaos_runner.py
+
+

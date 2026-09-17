@@ -179,8 +179,11 @@ func (c *Consumer) batchFlushLoop() {
 
 		inserted, err := c.db.InsertBatch(c.ctx, batch)
 		if err != nil {
-			log.Printf("[ERROR] Batch insert failed: %v", err)
-			eventsTotal.WithLabelValues("dlq").Add(float64(len(batch)))
+			log.Printf("[ERROR] Batch insert failed: %v. Isolating batch into DLQ...", err)
+			for _, rec := range batch {
+				raw, _ := json.Marshal(rec)
+				c.routeToDLQ(raw, fmt.Sprintf("Batch database insert error: %v", err))
+			}
 		} else {
 			eventsTotal.WithLabelValues("ingested").Add(float64(inserted))
 			// Add inserted records to LRU deduplication cache

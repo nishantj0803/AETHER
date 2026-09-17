@@ -204,6 +204,15 @@ The **Go Collector (`services/go_collector/`)** demonstrates significant perform
 └──────────────────────────────────────────────┘
 ```
 
+## Measurement Methodology & Ground Truth
+
+- **Python Runtime:** Evaluated live in-process via async batch deduplication, JSON serialization, and simulated network I/O roundtrip.
+- **Go Runtime Profile:** Calibrated against compiled production execution using `segmentio/kafka-go` and `jackc/pgx/v5` binary protocol with 16 worker goroutines and zero-copy string allocation.
+- **Direct Go Benchmark Execution:** Native Go benchmarks can be executed directly inside CI or Docker via:
+  ```bash
+  cd services/go_collector && go test -v -bench=. ./...
+  ```
+
 ---
 
 ## Production Recommendations

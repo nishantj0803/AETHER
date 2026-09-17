@@ -1,0 +1,45 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: aether-controller
+  namespace: aether-system
+  labels:
+    app: aether-controller
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: aether-controller
+  template:
+    metadata:
+      labels:
+        app: aether-controller
+    spec:
+      serviceAccountName: aether-controller-sa
+      containers:
+      - name: controller
+        image: aether/controller:latest
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: DATABASE_URL
+          valueFrom:
+            secretKeyRef:
+              name: aether-db-secret
+              key: dsn
+        - name: DEMO_SERVICE_URL
+          value: "http://payment-service.aether-apps.svc.cluster.local:8000"
+        - name: PROMETHEUS_URL
+          value: "http://prometheus.aether-system.svc.cluster.local:9090"
+        - name: GEMINI_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: aether-gemini-secret
+              key: api-key
+              optional: true
+        resources:
+          requests:
+            cpu: 250m
+            memory: 256Mi
+          limits:
+            cpu: 1000m
+            memory: 1Gi

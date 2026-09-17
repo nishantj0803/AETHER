@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: aether-system
+  labels:
+    app.kubernetes.io/part-of: aether
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: aether-apps
+  labels:
+    app.kubernetes.io/part-of: aether
