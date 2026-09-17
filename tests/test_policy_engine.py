@@ -68,7 +68,7 @@ def test_policy_idempotency_duplicate_blocked(fresh_engine):
     assert res2.allowed is False
     assert "Duplicate execution blocked" in res2.reason
 
-def test_policy_low_confidence_rejected(fresh_engine):
+def test_policy_low_confidence_requires_human_review(fresh_engine):
     spec = RemediationSpec.create(
         incident_id="INC-005",
         action_type=RemediationActionType.ROLLBACK_DEPLOYMENT,
@@ -80,4 +80,5 @@ def test_policy_low_confidence_rejected(fresh_engine):
 
     res = fresh_engine.validate(spec, dry_run=False)
     assert res.allowed is False
-    assert "below autonomous safety threshold" in res.reason
+    assert res.requires_human_review is True
+    assert "requires human approval" in res.reason

@@ -121,13 +121,24 @@ class FaultEngine:
         ACTIVE_DB_CONNECTIONS.set(0)
         self.rollback_deployment("v1.0.0")
 
-    def simulate_request_execution(self) -> None:
-        """Called inside payment request handler to simulate effects of active faults."""
+    @staticmethod
+    def _cpu_burn_sync() -> None:
+        """CPU-intensive work offloaded to thread pool to avoid blocking the event loop."""
+        end = time.time() + 0.15
+        while time.time() < end:
+            _ = [i * i for i in range(1000)]
+
+    async def simulate_request_execution(self) -> None:
+        """Called inside payment request handler to simulate effects of active faults.
+        
+        All blocking operations use asyncio-compatible primitives to avoid
+        starving the ASGI event loop under concurrent load.
+        """
         # 1. Check Bad Deployment / DB Timeout
         if "bad_deployment" in self.active_faults:
             # 25% of queries exceed the 50ms timeout
             if random.random() < 0.25:
-                time.sleep(0.06)
+                await asyncio.sleep(0.06)  # Non-blocking sleep
                 raise TimeoutError("Database connection timed out: query exceeded db_timeout_ms=50ms limit")
 
         # 2. Check Memory Leak
@@ -144,11 +155,8 @@ class FaultEngine:
         if "error_burst" in self.active_faults:
             raise RuntimeError("InternalPaymentGatewayError: unexpected upstream 500 returned")
 
-        # 5. Check CPU Burn
+        # 5. Check CPU Burn — offloaded to thread pool
         if "cpu_burn" in self.active_faults:
-            # Consume CPU cycles in-thread for 150ms
-            end = time.time() + 0.15
-            while time.time() < end:
-                _ = [i * i for i in range(1000)]
+            await asyncio.to_thread(self._cpu_burn_sync)
 
 fault_engine = FaultEngine()

@@ -1,4 +1,5 @@
 import hashlib
+import json
 from enum import Enum
 from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field
@@ -32,8 +33,9 @@ class RemediationSpec(BaseModel):
         confidence_score: float,
         risk_level: str = "LOW"
     ) -> "RemediationSpec":
-        # Generate deterministic idempotency key
-        key_raw = f"{incident_id}:{action_type.value}:{target_service}:{sorted(parameters.items())}"
+        # Generate deterministic idempotency key using canonical JSON serialization
+        canon_params = json.dumps(parameters, sort_keys=True, default=str)
+        key_raw = f"{incident_id}:{action_type.value}:{target_service}:{canon_params}"
         idempotency_key = hashlib.sha256(key_raw.encode("utf-8")).hexdigest()[:32]
         
         remediation_id = f"REM-{idempotency_key[:8]}"

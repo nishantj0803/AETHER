@@ -97,8 +97,8 @@ services:
   # 6. Payment Demo Microservice (FastAPI + OpenTelemetry + Fault Injection Harness)
   demo-service:
     build:
-      context: ./services/demo_service
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: services/demo_service/Dockerfile
     container_name: aether-demo-service
     ports:
       - "8000:8000"

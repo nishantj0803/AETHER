@@ -1,6 +1,6 @@
 import logging
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
 from services.rca_agent.schema import RemediationActionType, RemediationSpec
@@ -13,6 +13,7 @@ class PolicyValidationResult:
     reason: str
     risk_level: str
     dry_run_passed: bool
+    requires_human_review: bool = False
 
 class ZeroTrustPolicyEngine:
     """
@@ -101,13 +102,14 @@ class ZeroTrustPolicyEngine:
                     dry_run_passed=False
                 )
 
-        # 6. Confidence Check
+        # 6. Confidence Check — low confidence requires human approval, not hard rejection
         if spec.confidence_score < 0.80:
             return PolicyValidationResult(
                 allowed=False,
-                reason=f"Confidence score ({spec.confidence_score:.2f}) below autonomous safety threshold (0.80)",
+                reason=f"Confidence score ({spec.confidence_score:.2f}) below autonomous threshold (0.80) — requires human approval",
                 risk_level="HIGH",
-                dry_run_passed=True
+                dry_run_passed=True,
+                requires_human_review=True
             )
 
         logger.info(f"✅ Policy validation PASSED for remediation {spec.remediation_id}")
@@ -122,5 +124,10 @@ class ZeroTrustPolicyEngine:
         """Record execution to update rate-limit and idempotency gates."""
         self.executed_idempotency_keys.add(spec.idempotency_key)
         self.last_execution_time[spec.target_service] = time.time()
+
+    def unmark_executed(self, spec: RemediationSpec):
+        """Revert execution mark on failure (supports TOCTOU-safe idempotency)."""
+        self.executed_idempotency_keys.discard(spec.idempotency_key)
+        # Don't revert rate limit — failed actions still count toward cooldown
 
 policy_engine = ZeroTrustPolicyEngine()

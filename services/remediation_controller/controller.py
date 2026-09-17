@@ -72,10 +72,31 @@ class RemediationController:
         return False
 
     async def process_remediation(self, spec: RemediationSpec) -> Dict[str, Any]:
-        """End-to-end remediation pipeline with zero-trust validation and verification."""
+        """End-to-end remediation pipeline with zero-trust validation and verification.
+        
+        Fixes applied:
+        - TOCTOU-safe: marks idempotency key BEFORE execution, reverts on failure
+        - Anti-flapping: only resolves incident on verified success; escalates on failure
+        - Human-review routing: low-confidence specs are escalated, not silently dropped
+        """
         # 1. Policy Engine Validation
         validation = policy_engine.validate(spec, dry_run=False)
         if not validation.allowed:
+            # Distinguish between hard rejections and human-review-needed
+            if validation.requires_human_review:
+                logger.info(f"Remediation {spec.remediation_id} requires human approval (confidence={spec.confidence_score:.2f})")
+                await db.update_incident_status(
+                    incident_id=spec.incident_id,
+                    status="REQUIRE_HUMAN_TRIAGE",
+                    rca_summary=spec.rationale,
+                    confidence_score=spec.confidence_score
+                )
+                return {
+                    "status": "REQUIRES_HUMAN_APPROVAL",
+                    "reason": validation.reason,
+                    "remediation_id": spec.remediation_id
+                }
+
             logger.warning(f"Remediation REJECTED by policy engine: {validation.reason}")
             return {
                 "status": "REJECTED_BY_POLICY",
@@ -83,7 +104,10 @@ class RemediationController:
                 "remediation_id": spec.remediation_id
             }
 
-        # 2. Record in Audit Log
+        # 2. Claim idempotency slot BEFORE execution (TOCTOU-safe)
+        policy_engine.mark_executed(spec)
+
+        # 3. Record in Audit Log
         await db.record_remediation(
             remediation_id=spec.remediation_id,
             incident_id=spec.incident_id,
@@ -95,35 +119,47 @@ class RemediationController:
             status="EXECUTING"
         )
 
-        # 3. Execute Remediation
+        # 4. Execute Remediation
         success = await self.execute_action(spec)
         if not success:
+            # Revert idempotency mark so the action can be retried
+            policy_engine.unmark_executed(spec)
             return {
                 "status": "EXECUTION_FAILED",
                 "remediation_id": spec.remediation_id
             }
 
-        policy_engine.mark_executed(spec)
-
-        # 4. Closed-Loop Verification
+        # 5. Closed-Loop Verification
         verified = await self.verify_recovery()
-        final_status = "RESOLVED" if verified else "ROLLBACK_REMEDIATION"
 
-        # 5. Update Database Records
-        await db.update_incident_status(
-            incident_id=spec.incident_id,
-            status=final_status,
-            rca_summary=spec.rationale,
-            confidence_score=spec.confidence_score
-        )
-
-        detector.resolve_incident(spec.target_service)
+        if verified:
+            # 6a. Success: resolve incident and update records
+            await db.update_incident_status(
+                incident_id=spec.incident_id,
+                status="RESOLVED",
+                rca_summary=spec.rationale,
+                confidence_score=spec.confidence_score
+            )
+            detector.resolve_incident(spec.target_service)
+        else:
+            # 6b. Failure: DO NOT resolve incident (prevents infinite flapping loop).
+            # Escalate to human triage instead of re-triggering detection.
+            await db.update_incident_status(
+                incident_id=spec.incident_id,
+                status="REQUIRE_HUMAN_TRIAGE",
+                rca_summary=f"Remediation {spec.action_type.value} failed verification — manual intervention required",
+                confidence_score=spec.confidence_score
+            )
+            logger.critical(
+                f"Remediation {spec.remediation_id} failed verification. "
+                f"Incident {spec.incident_id} escalated to REQUIRE_HUMAN_TRIAGE."
+            )
 
         return {
             "remediation_id": spec.remediation_id,
             "incident_id": spec.incident_id,
             "action_type": spec.action_type.value,
-            "status": final_status,
+            "status": "RESOLVED" if verified else "REQUIRE_HUMAN_TRIAGE",
             "verified": verified
         }
 

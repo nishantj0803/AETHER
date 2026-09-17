@@ -105,7 +105,7 @@ async def process_payment(payment: PaymentRequest):
     
     # 1. Run through synthetic fault engine checks
     try:
-        fault_engine.simulate_request_execution()
+        await fault_engine.simulate_request_execution()
     except Exception as e:
         PAYMENTS_TOTAL.labels(status="failed", currency=payment.currency).inc()
         duration_ms = (time.time() - start_time) * 1000
