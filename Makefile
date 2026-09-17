@@ -63,5 +63,9 @@ test:
 benchmark:
 	PYTHONPATH=. .venv/bin/python3 benchmarks/benchmark_runner.py --duration 10 --concurrency 8
 
+benchmark-collector:
+	PYTHONPATH=. .venv/bin/python3 benchmarks/collector_benchmark.py --records 5000 --batch-size 500
+
 locust:
 	.venv/bin/locust -f benchmarks/locustfile.py --host http://localhost:8000
+

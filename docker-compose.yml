@@ -162,6 +162,36 @@ services:
           memory: 512M
     restart: unless-stopped
 
+  # 7. High-Throughput Go Ingestion Collector (Production Stream Ingestion & Benchmark)
+  go-collector:
+    build:
+      context: ./services/go_collector
+      dockerfile: Dockerfile
+    container_name: aether-go-collector
+    networks:
+      - aether-network
+    ports:
+      - "9102:9102"     # Prometheus metrics & health check
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: redpanda:9092
+      DATABASE_URL: postgresql://aether_user:aether_password@postgres:5432/aether_db
+      KAFKA_TOPIC_LOGS: telemetry.logs
+      KAFKA_TOPIC_DLQ: telemetry.dlq
+      KAFKA_CONSUMER_GROUP: aether-go-collector
+      WORKER_COUNT: 8
+      BATCH_SIZE: 500
+      BATCH_TIMEOUT_MS: 50
+      PROMETHEUS_PORT: 9102
+    depends_on:
+      - redpanda
+      - postgres
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 128M
+    restart: unless-stopped
+
 volumes:
   redpanda_data:
   postgres_data:
