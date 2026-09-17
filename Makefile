@@ -1,4 +1,4 @@
-.PHONY: help dev-up dev-down logs ps test traffic fault-bad-deploy fault-memory-leak fault-db-starve fault-reset
+.PHONY: help dev-up dev-down logs ps test traffic fault-bad-deploy fault-memory-leak fault-db-starve fault-reset benchmark locust
 
 help:
 	@echo "Aether - Autonomous SRE & Semantic Observability Engine"
@@ -16,8 +16,13 @@ help:
 	@echo "  make fault-db-starve   Trigger DB connection pool exhaustion"
 	@echo "  make fault-reset       Clear all injected faults and restore v1.0.0"
 	@echo ""
+	@echo "Benchmarks & Load Testing:"
+	@echo "  make benchmark         Run throughput and autonomous MTTR benchmark suite"
+	@echo "  make locust            Launch interactive Locust load testing web UI (:8089)"
+	@echo ""
 	@echo "Testing:"
 	@echo "  make test              Run unit and integration test suite"
+
 
 dev-up:
 	docker compose up -d --build
@@ -54,3 +59,9 @@ fault-reset:
 
 test:
 	pytest tests/ -v
+
+benchmark:
+	PYTHONPATH=. .venv/bin/python3 benchmarks/benchmark_runner.py --duration 10 --concurrency 8
+
+locust:
+	.venv/bin/locust -f benchmarks/locustfile.py --host http://localhost:8000
