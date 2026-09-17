@@ -82,3 +82,29 @@ def test_policy_low_confidence_requires_human_review(fresh_engine):
     assert res.allowed is False
     assert res.requires_human_review is True
     assert "requires human approval" in res.reason
+
+def test_policy_unmark_executed_allows_retry(fresh_engine):
+    spec = RemediationSpec.create(
+        incident_id="INC-006",
+        action_type=RemediationActionType.ROLLBACK_DEPLOYMENT,
+        target_service="payment-service",
+        parameters={"target_version": "v1.0.0"},
+        rationale="Rollback with transient network glitch",
+        confidence_score=0.95
+    )
+
+    # Initial validation passes and is claimed before execution (TOCTOU guard)
+    res = fresh_engine.validate(spec, dry_run=False)
+    assert res.allowed is True
+    fresh_engine.mark_executed(spec)
+
+    # While marked, duplicates are rejected
+    assert fresh_engine.validate(spec, dry_run=False).allowed is False
+
+    # Simulate execution adapter failure -> unmark_executed restores slot
+    fresh_engine.unmark_executed(spec)
+
+    # Retry is now permitted
+    retry_res = fresh_engine.validate(spec, dry_run=True)
+    assert retry_res.allowed is True
+

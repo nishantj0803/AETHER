@@ -2,6 +2,7 @@ import json
 import logging
 import os
 import sys
+import time
 import uuid
 import psutil
 from datetime import datetime, timezone
@@ -10,7 +11,6 @@ from typing import Any, Dict, Optional
 from prometheus_client import Counter, Histogram, Gauge, generate_latest, CONTENT_TYPE_LATEST
 from opentelemetry import trace
 from opentelemetry.sdk.trace import TracerProvider
-from opentelemetry.sdk.trace.export import SimpleSpanProcessor, ConsoleSpanExporter
 
 # 1. OpenTelemetry Setup
 trace.set_tracer_provider(TracerProvider())
@@ -58,6 +58,12 @@ class StructuredLogger:
         self.service_name = service_name
         self.kafka_producer = None
         self.kafka_bootstrap = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:19092")
+        self._process = None
+        try:
+            self._process = psutil.Process()
+        except Exception:
+            pass
+        self._last_memory_check = 0.0
         self._setup_logger()
 
     def _setup_logger(self):
@@ -127,12 +133,14 @@ class StructuredLogger:
         # Print JSON to stdout for container log collection
         self.logger.info(json.dumps(payload))
 
-        # Update process memory gauge
-        try:
-            process = psutil.Process()
-            MEMORY_USAGE_BYTES.set(process.memory_info().rss)
-        except Exception:
-            pass
+        # Throttled update of process memory gauge (sample at most once every 2 seconds)
+        now = time.monotonic()
+        if self._process and (now - self._last_memory_check >= 2.0):
+            try:
+                MEMORY_USAGE_BYTES.set(self._process.memory_info().rss)
+                self._last_memory_check = now
+            except Exception:
+                pass
 
         return payload
 

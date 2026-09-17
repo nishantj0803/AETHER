@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import re
 from typing import Any, Dict, List, Optional
 import asyncpg
 
@@ -26,7 +27,8 @@ class DatabaseClient:
                     max_size=10,
                     command_timeout=10.0
                 )
-                logger.info(f"Connected to PostgreSQL at {self.dsn}")
+                safe_dsn = re.sub(r':([^@]+)@', ':****@', self.dsn)
+                logger.info(f"Connected to PostgreSQL at {safe_dsn}")
             except Exception as e:
                 logger.warning(f"Failed to connect to PostgreSQL ({e}). Operating in memory/dry-run mode.")
                 self.pool = None
@@ -103,7 +105,9 @@ class DatabaseClient:
             sql += " AND service_name = $2"
             params.append(service_name)
 
-        sql += f" ORDER BY embedding <=> $1::vector LIMIT {limit};"
+        limit_param_idx = len(params) + 1
+        sql += f" ORDER BY embedding <=> $1::vector LIMIT ${limit_param_idx};"
+        params.append(limit)
 
         async with self.pool.acquire() as conn:
             rows = await conn.fetch(sql, *params)

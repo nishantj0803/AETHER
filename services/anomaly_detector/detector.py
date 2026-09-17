@@ -26,12 +26,18 @@ class IncidentContext:
     recent_errors: Optional[List[Dict[str, Any]]] = None
 
 class AnomalyDetector:
-    def __init__(self, prometheus_url: Optional[str] = None, service_url: Optional[str] = None):
+    def __init__(
+        self,
+        prometheus_url: Optional[str] = None,
+        service_url: Optional[str] = None,
+        service_name: Optional[str] = None
+    ):
         self.prometheus_url = prometheus_url or os.getenv("PROMETHEUS_URL", "http://localhost:9090")
         self.service_url = service_url or os.getenv("DEMO_SERVICE_URL", "http://localhost:8000")
+        self.service_name = service_name or os.getenv("SERVICE_NAME", "payment-service")
         self.active_incidents: Dict[str, IncidentContext] = {}
 
-    async def fetch_prometheus_metrics(self) -> Dict[str, float]:
+    async def fetch_prometheus_metrics(self, window: str = "1m") -> Dict[str, float]:
         """Query Prometheus API or scrape service /metrics directly."""
         metrics = {
             "http_5xx_rate": 0.0,
@@ -42,15 +48,16 @@ class AnomalyDetector:
         async with httpx.AsyncClient() as client:
             # 1. Try Prometheus query API
             try:
-                # HTTP 5xx error rate query
-                query = '(sum(rate(http_requests_total{status=~"5.."}[1m])) or vector(0)) / (sum(rate(http_requests_total[1m])) > 0)'
+                # HTTP 5xx error rate query with configurable evaluation window
+                query = f'(sum(rate(http_requests_total{{status=~"5.."}}[{window}])) or vector(0)) / (sum(rate(http_requests_total[{window}])) > 0)'
                 resp = await client.get(f"{self.prometheus_url}/api/v1/query", params={"query": query}, timeout=2.0)
                 if resp.status_code == 200:
                     data = resp.json()
                     results = data.get("data", {}).get("result", [])
                     if results:
                         metrics["http_5xx_rate"] = float(results[0]["value"][1])
-            except Exception:
+            except Exception as e:
+                logger.debug(f"Prometheus API query failed ({e}); falling back to direct service scrape.")
                 # Fallback: scrape demo-service /metrics directly
                 try:
                     resp = await client.get(f"{self.service_url}/metrics", timeout=2.0)
@@ -107,7 +114,7 @@ class AnomalyDetector:
 
         # Take highest severity breach
         primary_breach = breaches[0]
-        service_name = "payment-service"
+        service_name = self.service_name
 
         # Prevent flapping / duplicate incident spam if an incident is already ongoing
         if service_name in self.active_incidents:
@@ -120,15 +127,18 @@ class AnomalyDetector:
         recent_errors = []
         try:
             recent_errors = await db.search_similar_logs("Connection timeout database error", limit=3)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Vector search for similar error logs failed: {e}")
+
+        metric_val = metrics.get(primary_breach.metric_name)
+        val_str = f"{metric_val:.3f}" if isinstance(metric_val, (int, float)) else str(metric_val)
 
         context = IncidentContext(
             incident_id=incident_id,
             service_name=service_name,
             severity=primary_breach.severity,
             trigger_rule=primary_breach.name,
-            trigger_reason=f"{primary_breach.description} (value: {metrics.get(primary_breach.metric_name):.3f})",
+            trigger_reason=f"{primary_breach.description} (value: {val_str})",
             metric_snapshot=metrics,
             detected_at=time.time(),
             deployment_metadata=deployment,
@@ -152,9 +162,10 @@ class AnomalyDetector:
 
         return context
 
-    def resolve_incident(self, service_name: str = "payment-service"):
-        if service_name in self.active_incidents:
-            del self.active_incidents[service_name]
-            logger.info(f"Incident on {service_name} marked as cleared in detector")
+    def resolve_incident(self, service_name: Optional[str] = None):
+        target = service_name or self.service_name
+        if target in self.active_incidents:
+            del self.active_incidents[target]
+            logger.info(f"Incident on {target} marked as cleared in detector")
 
 detector = AnomalyDetector()

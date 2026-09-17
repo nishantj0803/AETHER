@@ -24,7 +24,6 @@ CREATE TABLE IF NOT EXISTS telemetry_logs (
 CREATE INDEX IF NOT EXISTS idx_logs_timestamp ON telemetry_logs (timestamp DESC);
 CREATE INDEX IF NOT EXISTS idx_logs_service_level ON telemetry_logs (service_name, level);
 CREATE INDEX IF NOT EXISTS idx_logs_trace_id ON telemetry_logs (trace_id) WHERE trace_id IS NOT NULL;
-CREATE INDEX IF NOT EXISTS idx_logs_event_id ON telemetry_logs (event_id);
 
 -- HNSW Vector index for fast approximate nearest neighbor semantic search on error logs
 CREATE INDEX IF NOT EXISTS idx_logs_embedding_hnsw 
@@ -95,4 +94,3 @@ CREATE TABLE IF NOT EXISTS remediation_audit_log (
 );
 
 CREATE INDEX IF NOT EXISTS idx_remediation_incident ON remediation_audit_log (incident_id);
-CREATE INDEX IF NOT EXISTS idx_remediation_idempotency ON remediation_audit_log (idempotency_key);

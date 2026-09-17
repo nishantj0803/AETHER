@@ -106,3 +106,48 @@ def test_full_autonomous_sre_loop_bad_deployment():
 
     post_error_rate = recovered_errors / 15
     assert post_error_rate == 0.0  # Successfully returned within healthy SLO!
+
+def test_controller_low_confidence_routes_to_human_triage():
+    from services.remediation_controller.controller import RemediationController
+    from services.rca_agent.schema import RemediationSpec
+
+    controller = RemediationController()
+    spec = RemediationSpec.create(
+        incident_id="INC-HUMAN-001",
+        action_type=RemediationActionType.ROLLBACK_DEPLOYMENT,
+        target_service="payment-service",
+        parameters={"target_version": "v1.0.0"},
+        rationale="Low confidence scenario",
+        confidence_score=0.70  # < 0.80 threshold
+    )
+    result = asyncio.run(controller.process_remediation(spec))
+    assert result["status"] == "REQUIRES_HUMAN_APPROVAL"
+
+def test_controller_verification_failure_escalates_without_flapping():
+    from unittest.mock import AsyncMock, patch
+    from services.anomaly_detector.detector import detector
+    from services.remediation_controller.controller import RemediationController
+    from services.rca_agent.schema import RemediationSpec
+
+    controller = RemediationController()
+    # Populate detector active incident
+    detector.active_incidents["payment-service"] = "placeholder_incident"
+
+    spec = RemediationSpec.create(
+        incident_id="INC-FAIL-001",
+        action_type=RemediationActionType.ROLLBACK_DEPLOYMENT,
+        target_service="payment-service",
+        parameters={"target_version": "v1.0.0"},
+        rationale="Rollback that fails verification",
+        confidence_score=0.95
+    )
+
+    # Mock execute_action (succeeds) but verify_recovery (fails, service still unhealthy)
+    with patch.object(controller, "execute_action", new=AsyncMock(return_value=True)), \
+         patch.object(controller, "verify_recovery", new=AsyncMock(return_value=False)):
+        result = asyncio.run(controller.process_remediation(spec))
+        assert result["status"] == "REQUIRE_HUMAN_TRIAGE"
+        assert result["verified"] is False
+        # Flapping prevention check: incident is NOT cleared from detector
+        assert "payment-service" in detector.active_incidents
+

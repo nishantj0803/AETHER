@@ -56,7 +56,7 @@ class FaultInjectionRequest(BaseModel):
 # ----------------- Middleware for Telemetry -----------------
 @app.middleware("http")
 async def telemetry_middleware(request: Request, call_next):
-    start_time = time.time()
+    start_time = time.perf_counter()
     endpoint = request.url.path
     method = request.method
     
@@ -66,9 +66,10 @@ async def telemetry_middleware(request: Request, call_next):
             status_code = response.status_code
         except Exception as exc:
             status_code = 500
-            duration_ms = (time.time() - start_time) * 1000
+            elapsed = time.perf_counter() - start_time
+            duration_ms = elapsed * 1000
             REQUESTS_TOTAL.labels(status=500, method=method, endpoint=endpoint).inc()
-            REQUEST_DURATION.labels(endpoint=endpoint).observe(time.time() - start_time)
+            REQUEST_DURATION.labels(endpoint=endpoint).observe(elapsed)
             
             telemetry.log(
                 "ERROR",
@@ -79,9 +80,10 @@ async def telemetry_middleware(request: Request, call_next):
             )
             raise exc
 
-        duration_ms = (time.time() - start_time) * 1000
+        elapsed = time.perf_counter() - start_time
+        duration_ms = elapsed * 1000
         REQUESTS_TOTAL.labels(status=status_code, method=method, endpoint=endpoint).inc()
-        REQUEST_DURATION.labels(endpoint=endpoint).observe(time.time() - start_time)
+        REQUEST_DURATION.labels(endpoint=endpoint).observe(elapsed)
         return response
 
 # ----------------- Core Endpoints -----------------
@@ -101,14 +103,14 @@ async def metrics_endpoint():
 @app.post("/api/v1/payments/charge", response_model=PaymentResponse)
 async def process_payment(payment: PaymentRequest):
     """Process a customer checkout transaction with realistic simulation and fault testing."""
-    start_time = time.time()
+    start_time = time.perf_counter()
     
     # 1. Run through synthetic fault engine checks
     try:
         await fault_engine.simulate_request_execution()
     except Exception as e:
         PAYMENTS_TOTAL.labels(status="failed", currency=payment.currency).inc()
-        duration_ms = (time.time() - start_time) * 1000
+        duration_ms = (time.perf_counter() - start_time) * 1000
         log_entry = telemetry.log(
             "ERROR",
             f"Payment processing failed for {payment.account_id}: {str(e)}",
@@ -131,7 +133,7 @@ async def process_payment(payment: PaymentRequest):
 
     # 3. Successful payment record
     PAYMENTS_TOTAL.labels(status="success", currency=payment.currency).inc()
-    duration_ms = (time.time() - start_time) * 1000
+    duration_ms = (time.perf_counter() - start_time) * 1000
 
     log_entry = telemetry.log(
         "INFO",

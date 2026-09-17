@@ -1,10 +1,17 @@
 version: '3.8'
 
+networks:
+  aether-network:
+    driver: bridge
+    name: aether-network
+
 services:
   # 1. Redpanda (Ultra-lightweight Kafka-compatible streaming engine)
   redpanda:
     image: docker.redpanda.com/redpandadata/redpanda:v24.1.8
     container_name: aether-redpanda
+    networks:
+      - aether-network
     command:
       - redpanda start
       - --smp 1
@@ -24,26 +31,42 @@ services:
     volumes:
       - redpanda_data:/var/lib/redpanda/data
     healthcheck:
-      test: ["CMD-SHELL", "rpk cluster health | grep -E 'Healthy|OK' || exit 0"]
+      test: ["CMD-SHELL", "rpk cluster health | grep -E 'Healthy|OK'"]
       interval: 10s
       timeout: 5s
       retries: 5
+    deploy:
+      resources:
+        limits:
+          cpus: '1.5'
+          memory: 1200M
+    restart: unless-stopped
 
   # 2. Redpanda Console (Real-time UI for topics, consumers, and message streams)
   redpanda-console:
     image: docker.redpanda.com/redpandadata/console:v2.5.2
     container_name: aether-redpanda-console
+    networks:
+      - aether-network
     ports:
       - "8080:8080"
     environment:
       KAFKA_BROKERS: "redpanda:9092"
     depends_on:
       - redpanda
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+    restart: unless-stopped
 
   # 3. PostgreSQL 16 with pgvector extension
   postgres:
     image: pgvector/pgvector:pg16
     container_name: aether-postgres
+    networks:
+      - aether-network
     ports:
       - "5432:5432"
     environment:
@@ -58,11 +81,19 @@ services:
       interval: 5s
       timeout: 5s
       retries: 5
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+    restart: unless-stopped
 
   # 4. Prometheus (Deterministic SLO alerting & 5s scraping engine)
   prometheus:
     image: prom/prometheus:v2.51.0
     container_name: aether-prometheus
+    networks:
+      - aether-network
     ports:
       - "9090:9090"
     volumes:
@@ -73,12 +104,19 @@ services:
       - --config.file=/etc/prometheus/prometheus.yml
       - --storage.tsdb.path=/prometheus
       - --web.enable-lifecycle
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
     restart: unless-stopped
 
   # 5. Grafana (Real-time dashboards for metrics, latency, and remediation)
   grafana:
     image: grafana/grafana:10.4.1
     container_name: aether-grafana
+    networks:
+      - aether-network
     ports:
       - "3000:3000"
     environment:
@@ -92,6 +130,11 @@ services:
       - grafana_data:/var/lib/grafana
     depends_on:
       - prometheus
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
     restart: unless-stopped
 
   # 6. Payment Demo Microservice (FastAPI + OpenTelemetry + Fault Injection Harness)
@@ -100,6 +143,8 @@ services:
       context: .
       dockerfile: services/demo_service/Dockerfile
     container_name: aether-demo-service
+    networks:
+      - aether-network
     ports:
       - "8000:8000"
     environment:
@@ -110,6 +155,11 @@ services:
     depends_on:
       - redpanda
       - postgres
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
     restart: unless-stopped
 
 volumes:
