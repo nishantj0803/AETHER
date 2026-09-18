@@ -36,14 +36,14 @@ var (
 	)
 
 	activeWorkersGauge = prometheus.NewGauge(
-		prometheus.NewGaugeOpts{
+		prometheus.GaugeOpts{
 			Name: "aether_collector_active_workers",
 			Help: "Number of active concurrent consumer worker goroutines",
 		},
 	)
 
 	dedupCacheSizeGauge = prometheus.NewGauge(
-		prometheus.NewGaugeOpts{
+		prometheus.GaugeOpts{
 			Name: "aether_collector_dedup_cache_size",
 			Help: "Current count of active event_ids in the LRU deduplication cache",
 		},
