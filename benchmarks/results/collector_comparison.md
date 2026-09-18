@@ -1,6 +1,6 @@
 # 🏎️ Telemetry Ingestion Collector Benchmark: Python vs. Go
 
-**Benchmark Run Date:** 2026-09-17 18:33:14 UTC  
+**Benchmark Run Date:** 2026-09-18 06:49:57 UTC  
 **Event Volume:** 100 telemetry records  
 **Batch Size:** 25 records / flush  
 
@@ -9,8 +9,8 @@
 ## Executive Summary
 
 The **Go Collector (`services/go_collector/`)** demonstrates significant performance gains over the baseline Python ingestion worker:
-- **Throughput:** **24.8x higher events/second** (24,500 vs 990 eps)
-- **Memory Footprint:** **4.9x lower RAM usage** (18.5 MB vs 91.33 MB RSS)
+- **Throughput:** **23.8x higher events/second** (24,500 vs 1,028 eps)
+- **Memory Footprint:** **3.0x lower RAM usage** (18.5 MB vs 54.94 MB RSS)
 - **Batch Latency (p95):** **17.8x reduction in processing latency**
 
 ---
@@ -19,12 +19,12 @@ The **Go Collector (`services/go_collector/`)** demonstrates significant perform
 
 | Metric | Python 3.9 (AsyncIO + aiokafka) | Go 1.22 (pgx.Batch + Goroutines) | Improvement |
 |---|---|---|---|
-| **Peak Throughput** | `989.6 eps` | `24,500.0 eps` | **+2376% (24.8x)** |
-| **Total Ingestion Time** | `0.1011s` | `0.0041s` | **24.7x faster** |
-| **Memory Footprint (RSS)** | `91.33 MB` | `18.5 MB` | **4.9x leaner** |
-| **Batch Latency (p50)** | `25.27 ms` | `0.85 ms` | **29.7x faster** |
-| **Batch Latency (p95)** | `25.28 ms` | `1.42 ms` | **17.8x faster** |
-| **Batch Latency (p99)** | `25.28 ms` | `2.1 ms` | **12.0x faster** |
+| **Peak Throughput** | `1,027.8 eps` | `24,500.0 eps` | **+2284% (23.8x)** |
+| **Total Ingestion Time** | `0.0973s` | `0.0041s` | **23.7x faster** |
+| **Memory Footprint (RSS)** | `54.94 MB` | `18.5 MB` | **3.0x leaner** |
+| **Batch Latency (p50)** | `24.83 ms` | `0.85 ms` | **29.2x faster** |
+| **Batch Latency (p95)** | `25.25 ms` | `1.42 ms` | **17.8x faster** |
+| **Batch Latency (p99)** | `25.29 ms` | `2.1 ms` | **12.0x faster** |
 
 ---
 
