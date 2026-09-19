@@ -2,7 +2,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from services.demo_service.main import app
-from services.demo_service.faults import fault_engine
+from services.demo_service.faults import FaultEngine, fault_engine
 
 client = TestClient(app)
 
@@ -68,3 +68,103 @@ def test_bad_deployment_fault_and_rollback():
         if r.status_code == 500:
             recovered_errors += 1
     assert recovered_errors == 0
+
+def test_fault_engine_lifecycle_and_fault_types():
+    engine = FaultEngine()
+    try:
+        # 1. Memory leak fault
+        res = engine.activate_fault("memory_leak", {"chunk_mb": 1})
+        assert res["status"] == "injected"
+        assert "memory_leak" in engine.active_faults
+        assert len(engine.leaked_memory_chunks) == 1
+        assert len(engine.leaked_memory_chunks[0]) == 1024 * 1024
+
+        # 2. DB starvation fault
+        res = engine.activate_fault("db_starve", {"starve_count": 12})
+        assert "db_starve" in engine.active_faults
+        assert engine.held_db_connections == 12
+
+        # 3. Error burst fault
+        res = engine.activate_fault("error_burst")
+        assert "error_burst" in engine.active_faults
+
+        # 4. Deactivate specific faults
+        res_clr = engine.deactivate_fault("memory_leak")
+        assert res_clr["status"] == "cleared"
+        assert "memory_leak" not in engine.active_faults
+        assert len(engine.leaked_memory_chunks) == 0
+
+        res_clr = engine.deactivate_fault("db_starve")
+        assert engine.held_db_connections == 0
+
+        # 5. Reset all
+        engine.reset_all()
+        assert len(engine.active_faults) == 0
+        assert engine.held_db_connections == 0
+        assert len(engine.leaked_memory_chunks) == 0
+    finally:
+        engine.reset_all()
+
+def test_fault_engine_bad_deployment_and_rollback():
+    engine = FaultEngine()
+    try:
+        assert engine.current_deployment["version"] == "v1.0.0"
+        assert engine.current_deployment["config"]["db_timeout_ms"] == 2000
+
+        # Activate bad deployment
+        engine.activate_fault("bad_deployment")
+        assert engine.current_deployment["version"] == "v1.1.0-bad"
+        assert engine.current_deployment["config"]["db_timeout_ms"] == 50
+        assert "bad_deployment" in engine.active_faults
+
+        # Rollback
+        res = engine.rollback_deployment("v1.0.0")
+        assert res["status"] == "rolled_back"
+        assert engine.current_deployment["version"] == "v1.0.0"
+        assert engine.current_deployment["config"]["db_timeout_ms"] == 2000
+        assert "bad_deployment" not in engine.active_faults
+    finally:
+        engine.reset_all()
+
+def test_fault_engine_simulate_request_execution():
+    import asyncio
+    from unittest.mock import patch
+
+    async def _test():
+        engine = FaultEngine()
+        try:
+            # 1. Error burst simulation
+            engine.activate_fault("error_burst")
+            with pytest.raises(RuntimeError, match="InternalPaymentGatewayError"):
+                await engine.simulate_request_execution()
+            engine.deactivate_fault("error_burst")
+
+            # 2. Memory leak simulation
+            engine.activate_fault("memory_leak", {"chunk_mb": 1})
+            assert len(engine.leaked_memory_chunks) == 1
+            await engine.simulate_request_execution()
+            # Simulation appends an additional 5MB chunk
+            assert len(engine.leaked_memory_chunks) == 2
+            engine.deactivate_fault("memory_leak")
+
+            # 3. DB starvation simulation
+            engine.activate_fault("db_starve")
+            with patch("random.random", return_value=0.1):
+                with pytest.raises(ConnectionResetError, match="ConnectionPoolExhausted"):
+                    await engine.simulate_request_execution()
+            with patch("random.random", return_value=0.9):
+                await engine.simulate_request_execution()
+            engine.deactivate_fault("db_starve")
+
+            # 4. Bad deployment timeout simulation
+            engine.activate_fault("bad_deployment")
+            with patch("random.random", return_value=0.1):
+                with pytest.raises(TimeoutError, match="limit"):
+                    await engine.simulate_request_execution()
+            with patch("random.random", return_value=0.9):
+                await engine.simulate_request_execution()
+        finally:
+            engine.reset_all()
+
+    asyncio.run(_test())
+

@@ -2,7 +2,7 @@ import json
 import logging
 import os
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 import httpx
 
 from dataclasses import dataclass
@@ -290,9 +290,14 @@ Safety Rules:
         prompt = self._build_prompt(incident)
         models_to_try = [self.primary_model] + [m for m in self.fallback_models if m != self.primary_model]
 
+        headers = {
+            "Content-Type": "application/json",
+            "x-goog-api-key": self.api_key
+        }
+
         with httpx.Client(timeout=self.timeout) as client:
             for model in models_to_try:
-                url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={self.api_key}"
+                url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
                 payload = {
                     "contents": [{"parts": [{"text": prompt}]}],
                     "generationConfig": {
@@ -302,7 +307,7 @@ Safety Rules:
                 }
                 try:
                     logger.info(f"Querying Gemini model '{model}' for incident {incident.incident_id}...")
-                    resp = client.post(url, json=payload)
+                    resp = client.post(url, json=payload, headers=headers)
                     if resp.status_code == 200:
                         body = resp.json()
                         candidates = body.get("candidates", [])
@@ -328,10 +333,14 @@ Safety Rules:
 
         prompt = self._build_prompt(incident)
         models_to_try = [self.primary_model] + [m for m in self.fallback_models if m != self.primary_model]
+        headers = {
+            "Content-Type": "application/json",
+            "x-goog-api-key": self.api_key
+        }
 
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             for model in models_to_try:
-                url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={self.api_key}"
+                url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
                 payload = {
                     "contents": [{"parts": [{"text": prompt}]}],
                     "generationConfig": {
@@ -341,7 +350,7 @@ Safety Rules:
                 }
                 try:
                     logger.info(f"Querying Gemini model '{model}' for incident {incident.incident_id}...")
-                    resp = await client.post(url, json=payload)
+                    resp = await client.post(url, json=payload, headers=headers)
                     if resp.status_code == 200:
                         body = resp.json()
                         candidates = body.get("candidates", [])

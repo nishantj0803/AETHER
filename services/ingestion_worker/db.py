@@ -12,10 +12,18 @@ logger = logging.getLogger("aether.db")
 
 class DatabaseClient:
     def __init__(self, dsn: Optional[str] = None):
-        self.dsn = dsn or os.getenv(
-            "DATABASE_URL",
-            "postgresql://aether_user:aether_password@localhost:5432/aether_db"
-        )
+        if dsn:
+            self.dsn = dsn
+        elif os.getenv("DATABASE_URL"):
+            self.dsn = os.getenv("DATABASE_URL")
+        else:
+            user = os.getenv("POSTGRES_USER", "aether_user")
+            password = os.getenv("POSTGRES_PASSWORD", "")
+            host = os.getenv("POSTGRES_HOST", "localhost")
+            port = os.getenv("POSTGRES_PORT", "5432")
+            dbname = os.getenv("POSTGRES_DB", "aether_db")
+            auth = f"{user}:{password}@" if password else f"{user}@"
+            self.dsn = f"postgresql://{auth}{host}:{port}/{dbname}"
         self.pool: Optional[asyncpg.Pool] = None
         self._in_memory_incidents: Dict[str, Dict[str, Any]] = {}
         self._in_memory_transitions: List[Dict[str, Any]] = []

@@ -4,9 +4,8 @@ import json
 import logging
 import os
 import signal
-import sys
 from collections import OrderedDict
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional
 
 from aiokafka import AIOKafkaConsumer, AIOKafkaProducer
 from services.ingestion_worker.db import db

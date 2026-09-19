@@ -1,8 +1,6 @@
 import argparse
 import asyncio
-import json
 from services.ingestion_worker.db import db
-from services.ingestion_worker.embeddings import embedder
 
 async def run_semantic_query(query: str, limit: int = 5):
     await db.connect()

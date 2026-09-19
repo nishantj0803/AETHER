@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"os"
 	"os/signal"
@@ -40,12 +41,26 @@ func loadConfig() *Config {
 		workerCount = 4
 	}
 
+	dbURL := os.Getenv("DATABASE_URL")
+	if dbURL == "" {
+		user := getEnv("POSTGRES_USER", "aether_user")
+		password := os.Getenv("POSTGRES_PASSWORD")
+		host := getEnv("POSTGRES_HOST", "localhost")
+		port := getEnv("POSTGRES_PORT", "5432")
+		dbname := getEnv("POSTGRES_DB", "aether_db")
+		auth := user
+		if password != "" {
+			auth = fmt.Sprintf("%s:%s", user, password)
+		}
+		dbURL = fmt.Sprintf("postgresql://%s@%s:%s/%s", auth, host, port, dbname)
+	}
+
 	return &Config{
 		KafkaBrokers:   brokers,
 		TopicLogs:      getEnv("KAFKA_TOPIC_LOGS", "telemetry.logs"),
 		TopicDLQ:       getEnv("KAFKA_TOPIC_DLQ", "telemetry.dlq"),
 		ConsumerGroup:  getEnv("KAFKA_CONSUMER_GROUP", "aether-go-collector"),
-		DatabaseURL:    getEnv("DATABASE_URL", "postgresql://aether_user:aether_password@localhost:5432/aether_db"),
+		DatabaseURL:    dbURL,
 		WorkerCount:    workerCount,
 		BatchSize:      getEnvInt("BATCH_SIZE", 500),
 		BatchTimeoutMS: getEnvInt("BATCH_TIMEOUT_MS", 50),

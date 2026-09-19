@@ -110,4 +110,86 @@ def test_consumer_contiguous_offset_halts_on_retry():
 
     asyncio.run(_test())
 
+def test_run_semantic_query_with_results(capsys):
+    import asyncio
+    from unittest.mock import AsyncMock, patch
+    from services.ingestion_worker.query import run_semantic_query
+
+    async def _test():
+        mock_results = [
+            {
+                "similarity": 0.92,
+                "level": "ERROR",
+                "service_name": "payment-service",
+                "message": "Database connection timed out: query exceeded limit",
+                "trace_id": "tr_12345",
+                "http_status": 500,
+            }
+        ]
+        with patch("services.ingestion_worker.query.db.connect", new=AsyncMock()) as mock_connect, \
+             patch("services.ingestion_worker.query.db.disconnect", new=AsyncMock()) as mock_disconnect, \
+             patch("services.ingestion_worker.query.db.search_similar_logs", new=AsyncMock(return_value=mock_results)) as mock_search:
+
+            await run_semantic_query("database timeout", limit=3)
+
+            mock_connect.assert_awaited_once()
+            mock_search.assert_awaited_once_with("database timeout", limit=3)
+            mock_disconnect.assert_awaited_once()
+
+    asyncio.run(_test())
+    captured = capsys.readouterr().out
+    assert "Searching logs semantically for: 'database timeout'" in captured
+    assert "Found 1 matches" in captured
+    assert "Similarity: 92.0%" in captured
+    assert "Database connection timed out" in captured
+
+def test_run_semantic_query_no_results(capsys):
+    import asyncio
+    from unittest.mock import AsyncMock, patch
+    from services.ingestion_worker.query import run_semantic_query
+
+    async def _test():
+        with patch("services.ingestion_worker.query.db.connect", new=AsyncMock()) as mock_connect, \
+             patch("services.ingestion_worker.query.db.disconnect", new=AsyncMock()) as mock_disconnect, \
+             patch("services.ingestion_worker.query.db.search_similar_logs", new=AsyncMock(return_value=[])) as mock_search:
+
+            await run_semantic_query("nonexistent error", limit=5)
+
+            mock_connect.assert_awaited_once()
+            mock_search.assert_awaited_once_with("nonexistent error", limit=5)
+            mock_disconnect.assert_awaited_once()
+
+    asyncio.run(_test())
+    captured = capsys.readouterr().out
+    assert "No matching logs found in pgvector." in captured
+
+def test_db_connect_failure_enters_memory_mode():
+    import asyncio
+    from unittest.mock import AsyncMock, patch
+    from services.ingestion_worker.db import DatabaseClient
+
+    async def _test():
+        client = DatabaseClient(dsn="postgresql://aether_user@localhost:5432/aether_db")
+        with patch("asyncpg.create_pool", new=AsyncMock(side_effect=OSError("Connection refused"))):
+            await client.connect()
+            assert client.pool is None
+
+            # Fallback in-memory/dry-run mode behavior
+            inserted = await client.insert_log({
+                "event_id": "evt_fallback_1",
+                "message": "Fallback test message",
+                "level": "INFO"
+            })
+            assert inserted is True
+
+            logs = await client.search_similar_logs("test query")
+            assert logs == []
+
+            # Disconnect on uninitialized pool should gracefully no-op
+            await client.disconnect()
+            assert client.pool is None
+
+    asyncio.run(_test())
+
+
 

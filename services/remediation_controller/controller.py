@@ -11,7 +11,6 @@ from services.rca_agent.schema import RemediationActionType, RemediationSpec
 from services.remediation_controller.policy_engine import policy_engine
 from services.remediation_controller.state_machine import (
     IncidentState,
-    IncidentStateMachine,
     CrashRecoveryManager
 )
 

@@ -8,7 +8,7 @@ import psutil
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
-from prometheus_client import Counter, Histogram, Gauge, generate_latest, CONTENT_TYPE_LATEST
+from prometheus_client import Counter, Histogram, Gauge
 from opentelemetry import trace
 from opentelemetry.sdk.trace import TracerProvider
 
