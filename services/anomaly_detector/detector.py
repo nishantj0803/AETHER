@@ -93,14 +93,11 @@ class AnomalyDetector:
 
     def evaluate_metrics(self, metrics: Dict[str, float]) -> List[SLORule]:
         """Deterministically check if metrics breach any SLO rules."""
-        breached_rules = []
-        for rule in DEFAULT_SLO_RULES:
-            val = metrics.get(rule.metric_name, 0.0)
-            if rule.condition == "gt" and val > rule.threshold:
-                breached_rules.append(rule)
-            elif rule.condition == "lt" and val < rule.threshold:
-                breached_rules.append(rule)
-        return breached_rules
+        return [
+            rule for rule in DEFAULT_SLO_RULES
+            if ((val := metrics.get(rule.metric_name, 0.0)) > rule.threshold and rule.condition == "gt") or
+               (val < rule.threshold and rule.condition == "lt")
+        ]
 
     async def check_for_anomalies(self) -> Optional[IncidentContext]:
         """Main detection cycle: evaluate SLOs and synthesize IncidentContext on breach."""
