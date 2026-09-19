@@ -1,4 +1,5 @@
 import pytest
+from unittest.mock import patch, AsyncMock, MagicMock
 from services.anomaly_detector.rules import DEFAULT_SLO_RULES
 from services.anomaly_detector.detector import AnomalyDetector
 
@@ -50,3 +51,33 @@ def test_anomaly_detector_resolve_clears_active_incident():
     detector.resolve_incident("order-service")
     assert "order-service" not in detector.active_incidents
 
+@pytest.mark.asyncio
+async def test_fetch_deployment_metadata_success():
+    detector = AnomalyDetector()
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.json.return_value = {"version": "1.0.0", "commit": "abc1234"}
+
+    mock_client_instance = AsyncMock()
+    mock_client_instance.get.return_value = mock_resp
+
+    mock_client_cls = MagicMock()
+    mock_client_cls.return_value.__aenter__.return_value = mock_client_instance
+
+    with patch("services.anomaly_detector.detector.httpx.AsyncClient", new=mock_client_cls):
+        result = await detector.fetch_deployment_metadata()
+        assert result == {"version": "1.0.0", "commit": "abc1234"}
+
+@pytest.mark.asyncio
+async def test_fetch_deployment_metadata_exception():
+    detector = AnomalyDetector()
+
+    mock_client_instance = AsyncMock()
+    mock_client_instance.get.side_effect = Exception("Network error")
+
+    mock_client_cls = MagicMock()
+    mock_client_cls.return_value.__aenter__.return_value = mock_client_instance
+
+    with patch("services.anomaly_detector.detector.httpx.AsyncClient", new=mock_client_cls):
+        result = await detector.fetch_deployment_metadata()
+        assert result is None
