@@ -10,6 +10,7 @@ from services.ingestion_worker.embeddings import embedder
 
 logger = logging.getLogger("aether.db")
 
+
 class DatabaseClient:
     def __init__(self, dsn: Optional[str] = None):
         self.dsn = dsn or os.getenv(
@@ -34,7 +35,8 @@ class DatabaseClient:
                 safe_dsn = re.sub(r':([^@]+)@', ':****@', self.dsn)
                 logger.info(f"Connected to PostgreSQL at {safe_dsn}")
             except Exception as e:
-                logger.warning(f"Failed to connect to PostgreSQL ({e}). Operating in memory/dry-run mode.")
+                logger.warning(
+                    f"Failed to connect to PostgreSQL ({e}). Operating in memory/dry-run mode.")
                 self.pool = None
 
     async def disconnect(self):
@@ -51,7 +53,8 @@ class DatabaseClient:
 
         message = record.get("message", "")
         # Embed message if error or warn level
-        embedding = embedder.embed(message) if record.get("level") in ("ERROR", "CRITICAL", "WARN") else None
+        embedding = embedder.embed(message) if record.get(
+            "level") in ("ERROR", "CRITICAL", "WARN") else None
         embedding_str = f"[{','.join(str(x) for x in embedding)}]" if embedding else None
 
         query = """
@@ -126,7 +129,8 @@ class DatabaseClient:
         metric_snapshot: Dict[str, Any]
     ) -> bool:
         """Record newly detected incident."""
-        now_ts = os.environ.get("MOCK_TIMESTAMP") or str(asyncio.get_event_loop().time()) if False else None
+        now_ts = os.environ.get("MOCK_TIMESTAMP") or str(
+            asyncio.get_event_loop().time()) if False else None
         inc_data = {
             "incident_id": incident_id,
             "service_name": service_name,
@@ -185,7 +189,8 @@ class DatabaseClient:
             results = list(self._in_memory_incidents.values())
             if status:
                 norm = status.strip().upper()
-                results = [i for i in results if i.get("status", "").upper() == norm]
+                results = [i for i in results if i.get(
+                    "status", "").upper() == norm]
             return results[:limit]
 
         query = "SELECT * FROM incidents"
@@ -193,7 +198,8 @@ class DatabaseClient:
         if status:
             query += " WHERE status = $1"
             params.append(status.strip().upper())
-        query += " ORDER BY created_at DESC LIMIT $" + str(len(params) + 1) + ";"
+        query += " ORDER BY created_at DESC LIMIT $" + \
+            str(len(params) + 1) + ";"
         params.append(limit)
 
         async with self.pool.acquire() as conn:
@@ -243,11 +249,13 @@ class DatabaseClient:
 
         target_norm = IncidentState.normalize(to_state)
         current_data = await self.get_incident(incident_id)
-        current_raw = current_data.get("status", "DETECTED") if current_data else "DETECTED"
+        current_raw = current_data.get(
+            "status", "DETECTED") if current_data else "DETECTED"
         current_norm = IncidentState.normalize(current_raw)
 
         # Enforce formal state transition rules
-        IncidentStateMachine.validate_transition(current_norm, target_norm, reason=reason)
+        IncidentStateMachine.validate_transition(
+            current_norm, target_norm, reason=reason)
 
         # Update in-memory record
         if incident_id in self._in_memory_incidents:
@@ -376,7 +384,8 @@ class DatabaseClient:
             self._seen_idempotency_keys = set()
 
         if idempotency_key in self._seen_idempotency_keys:
-            logger.warning(f"Database idempotency constraint: key '{idempotency_key}' already recorded.")
+            logger.warning(
+                f"Database idempotency constraint: key '{idempotency_key}' already recorded.")
             return False
 
         rec = {
@@ -432,5 +441,5 @@ class DatabaseClient:
             row = await conn.fetchrow(query, service_name)
             return dict(row) if row else None
 
-db = DatabaseClient()
 
+db = DatabaseClient()
