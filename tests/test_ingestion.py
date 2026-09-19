@@ -163,16 +163,23 @@ def test_run_semantic_query_no_results(capsys):
     captured = capsys.readouterr().out
     assert "No matching logs found in pgvector." in captured
 
-def test_db_connect_failure_enters_memory_mode():
+def test_db_connect_failure_enters_memory_mode(caplog):
     import asyncio
+    import logging
     from unittest.mock import AsyncMock, patch
     from services.ingestion_worker.db import DatabaseClient
 
     async def _test():
         client = DatabaseClient(dsn="postgresql://aether_user@localhost:5432/aether_db")
         with patch("asyncpg.create_pool", new=AsyncMock(side_effect=OSError("Connection refused"))):
-            await client.connect()
+            with caplog.at_level(logging.WARNING):
+                await client.connect()
+
             assert client.pool is None
+
+            log_messages = [record.message for record in caplog.records if record.levelno >= logging.WARNING]
+            assert any("Failed to connect to" in msg for msg in log_messages)
+            assert any("Connection refused" in msg for msg in log_messages)
 
             # Fallback in-memory/dry-run mode behavior
             inserted = await client.insert_log({
@@ -190,6 +197,7 @@ def test_db_connect_failure_enters_memory_mode():
             assert client.pool is None
 
     asyncio.run(_test())
+
 
 
 
