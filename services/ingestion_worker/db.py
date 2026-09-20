@@ -29,6 +29,22 @@ class DatabaseClient:
         self._in_memory_transitions: List[Dict[str, Any]] = []
         self._in_memory_remediations: Dict[str, Dict[str, Any]] = {}
 
+    @staticmethod
+    async def _init_connection(conn):
+        """Register native JSON and JSONB codecs so asyncpg parses dicts directly."""
+        await conn.set_type_codec(
+            'jsonb',
+            encoder=json.dumps,
+            decoder=json.loads,
+            schema='pg_catalog'
+        )
+        await conn.set_type_codec(
+            'json',
+            encoder=json.dumps,
+            decoder=json.loads,
+            schema='pg_catalog'
+        )
+
     async def connect(self):
         """Initialize PostgreSQL connection pool."""
         if not self.pool:
@@ -37,7 +53,8 @@ class DatabaseClient:
                     self.dsn,
                     min_size=2,
                     max_size=10,
-                    command_timeout=10.0
+                    command_timeout=10.0,
+                    init=self._init_connection
                 )
                 safe_dsn = re.sub(r':([^@]+)@', ':****@', self.dsn)
                 logger.info(f"Connected to PostgreSQL at {safe_dsn}")
@@ -206,13 +223,7 @@ class DatabaseClient:
 
         async with self.pool.acquire() as conn:
             rows = await conn.fetch(query, *params)
-            res = []
-            for r in rows:
-                d = dict(r)
-                if isinstance(d.get("metric_snapshot"), str):
-                    d["metric_snapshot"] = json.loads(d["metric_snapshot"])
-                res.append(d)
-            return res
+            return [dict(r) for r in rows]
 
     async def get_in_flight_incidents(self) -> List[Dict[str, Any]]:
         """Fetch incidents currently executing, verifying, or rolling back."""

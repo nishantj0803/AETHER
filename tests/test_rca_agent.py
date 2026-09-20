@@ -359,4 +359,37 @@ def test_deterministic_corroboration_action_aware_scoring():
     assert score_sc >= 0.80
     assert "latency_degradation" in breakdown_sc
 
+def test_gemini_client_connection_pooling_and_lifecycle():
+    import asyncio
+    import httpx
+    from services.rca_agent.graph import GeminiRCAClient
+
+    client = GeminiRCAClient(api_key="mock-key")
+
+    # Sync client pooling and close
+    sync_c1 = client.sync_client
+    sync_c2 = client.sync_client
+    assert sync_c1 is sync_c2
+    assert isinstance(sync_c1, httpx.Client)
+    assert not sync_c1.is_closed
+
+    client.close()
+    assert sync_c1.is_closed
+    assert client._sync_client is None
+
+    # Async client pooling and aclose
+    async def _test_async():
+        async_c1 = client.async_client
+        async_c2 = client.async_client
+        assert async_c1 is async_c2
+        assert isinstance(async_c1, httpx.AsyncClient)
+        assert not async_c1.is_closed
+
+        await client.aclose()
+        assert async_c1.is_closed
+        assert client._async_client is None
+
+    asyncio.run(_test_async())
+
+
 

@@ -168,6 +168,32 @@ class GeminiRCAClient:
         self.primary_model = primary_model or DEFAULT_PRIMARY_MODEL
         self.fallback_models = fallback_models or DEFAULT_FALLBACK_MODELS
         self.timeout = timeout_seconds
+        self._sync_client: Optional[httpx.Client] = None
+        self._async_client: Optional[httpx.AsyncClient] = None
+
+    @property
+    def sync_client(self) -> httpx.Client:
+        if self._sync_client is None or self._sync_client.is_closed:
+            self._sync_client = httpx.Client(timeout=self.timeout)
+        return self._sync_client
+
+    @property
+    def async_client(self) -> httpx.AsyncClient:
+        if self._async_client is None or self._async_client.is_closed:
+            self._async_client = httpx.AsyncClient(timeout=self.timeout)
+        return self._async_client
+
+    def close(self):
+        """Close persistent synchronous HTTP client."""
+        if self._sync_client is not None and not self._sync_client.is_closed:
+            self._sync_client.close()
+            self._sync_client = None
+
+    async def aclose(self):
+        """Close persistent asynchronous HTTP client."""
+        if self._async_client is not None and not self._async_client.is_closed:
+            await self._async_client.aclose()
+            self._async_client = None
 
     def is_available(self) -> bool:
         return bool(self.api_key and self.api_key.strip())
@@ -295,34 +321,34 @@ Safety Rules:
             "x-goog-api-key": self.api_key
         }
 
-        with httpx.Client(timeout=self.timeout) as client:
-            for model in models_to_try:
-                url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
-                payload = {
-                    "contents": [{"parts": [{"text": prompt}]}],
-                    "generationConfig": {
-                        "temperature": 0.1,
-                        "response_mime_type": "application/json"
-                    }
+        client = self.sync_client
+        for model in models_to_try:
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+            payload = {
+                "contents": [{"parts": [{"text": prompt}]}],
+                "generationConfig": {
+                    "temperature": 0.1,
+                    "response_mime_type": "application/json"
                 }
-                try:
-                    logger.info(f"Querying Gemini model '{model}' for incident {incident.incident_id}...")
-                    resp = client.post(url, json=payload, headers=headers)
-                    if resp.status_code == 200:
-                        body = resp.json()
-                        candidates = body.get("candidates", [])
-                        if candidates:
-                            raw_json = candidates[0]["content"]["parts"][0]["text"]
-                            logger.info(f"✅ Gemini model '{model}' provided structured RCA diagnosis")
-                            return self._parse_llm_response(raw_json, incident)
-                    elif resp.status_code in (404, 400):
-                        logger.warning(f"Model '{model}' returned HTTP {resp.status_code}; trying next fallback...")
-                        continue
-                    else:
-                        logger.warning(f"Gemini API returned HTTP {resp.status_code}: {resp.text[:200]}")
-                except Exception as e:
-                    logger.warning(f"Failed to query Gemini model '{model}': {e}")
+            }
+            try:
+                logger.info(f"Querying Gemini model '{model}' for incident {incident.incident_id}...")
+                resp = client.post(url, json=payload, headers=headers)
+                if resp.status_code == 200:
+                    body = resp.json()
+                    candidates = body.get("candidates", [])
+                    if candidates:
+                        raw_json = candidates[0]["content"]["parts"][0]["text"]
+                        logger.info(f"✅ Gemini model '{model}' provided structured RCA diagnosis")
+                        return self._parse_llm_response(raw_json, incident)
+                elif resp.status_code in (404, 400):
+                    logger.warning(f"Model '{model}' returned HTTP {resp.status_code}; trying next fallback...")
                     continue
+                else:
+                    logger.warning(f"Gemini API returned HTTP {resp.status_code}: {resp.text[:200]}")
+            except Exception as e:
+                logger.warning(f"Failed to query Gemini model '{model}': {e}")
+                continue
 
         return None
 
@@ -338,34 +364,34 @@ Safety Rules:
             "x-goog-api-key": self.api_key
         }
 
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            for model in models_to_try:
-                url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
-                payload = {
-                    "contents": [{"parts": [{"text": prompt}]}],
-                    "generationConfig": {
-                        "temperature": 0.1,
-                        "response_mime_type": "application/json"
-                    }
+        client = self.async_client
+        for model in models_to_try:
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+            payload = {
+                "contents": [{"parts": [{"text": prompt}]}],
+                "generationConfig": {
+                    "temperature": 0.1,
+                    "response_mime_type": "application/json"
                 }
-                try:
-                    logger.info(f"Querying Gemini model '{model}' for incident {incident.incident_id}...")
-                    resp = await client.post(url, json=payload, headers=headers)
-                    if resp.status_code == 200:
-                        body = resp.json()
-                        candidates = body.get("candidates", [])
-                        if candidates:
-                            raw_json = candidates[0]["content"]["parts"][0]["text"]
-                            logger.info(f"✅ Gemini model '{model}' provided structured RCA diagnosis")
-                            return self._parse_llm_response(raw_json, incident)
-                    elif resp.status_code in (404, 400):
-                        logger.warning(f"Model '{model}' returned HTTP {resp.status_code}; trying next fallback...")
-                        continue
-                    else:
-                        logger.warning(f"Gemini API returned HTTP {resp.status_code}: {resp.text[:200]}")
-                except Exception as e:
-                    logger.warning(f"Failed to query Gemini model '{model}': {e}")
+            }
+            try:
+                logger.info(f"Querying Gemini model '{model}' for incident {incident.incident_id}...")
+                resp = await client.post(url, json=payload, headers=headers)
+                if resp.status_code == 200:
+                    body = resp.json()
+                    candidates = body.get("candidates", [])
+                    if candidates:
+                        raw_json = candidates[0]["content"]["parts"][0]["text"]
+                        logger.info(f"✅ Gemini model '{model}' provided structured RCA diagnosis")
+                        return self._parse_llm_response(raw_json, incident)
+                elif resp.status_code in (404, 400):
+                    logger.warning(f"Model '{model}' returned HTTP {resp.status_code}; trying next fallback...")
                     continue
+                else:
+                    logger.warning(f"Gemini API returned HTTP {resp.status_code}: {resp.text[:200]}")
+            except Exception as e:
+                logger.warning(f"Failed to query Gemini model '{model}': {e}")
+                continue
 
         return None
 

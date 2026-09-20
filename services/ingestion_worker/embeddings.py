@@ -30,13 +30,9 @@ class SemanticEmbedder:
         text = re.sub(r'\d+', '', text)
         words = re.findall(r'[a-zA-Z_]+', text)
         
-        tokens = list(words)
-        # Add character tri-grams for subword similarity (e.g. 'timeout', 'time', 'out')
-        for word in words:
-            if len(word) >= 4:
-                for i in range(len(word) - 2):
-                    tokens.append(word[i:i+3])
-        return tokens
+        # Add character tri-grams for subword similarity via list comprehension
+        subwords = [word[i:i+3] for word in words if len(word) >= 4 for i in range(len(word) - 2)]
+        return list(words) + subwords
 
     def embed(self, text: str) -> List[float]:
         """Convert log message or error trace into a 384-dim unit vector."""
@@ -50,8 +46,8 @@ class SemanticEmbedder:
         vec = np.zeros(self.dimension, dtype=np.float32)
         
         for token in tokens:
-            # Deterministic MD5 hash to index and sign
-            h = hashlib.md5(token.encode('utf-8')).hexdigest()
+            # Deterministic SHA-256 hash to index and sign
+            h = hashlib.sha256(token.encode('utf-8')).hexdigest()
             idx = int(h[:8], 16) % self.dimension
             sign = 1.0 if int(h[8:10], 16) % 2 == 0 else -1.0
             
