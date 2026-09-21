@@ -18,7 +18,7 @@ from services.demo_service.telemetry import (
     tracer
 )
 from services.demo_service.faults import fault_engine
-from services.remediation_controller.api import router as incident_router
+from services.remediation_controller.api import router as incident_router, chatops_router
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -53,6 +53,7 @@ app.add_middleware(
 )
 
 app.include_router(incident_router)
+app.include_router(chatops_router)
 
 # ----------------- Data Models -----------------
 class PaymentRequest(BaseModel):

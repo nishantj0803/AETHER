@@ -13,6 +13,10 @@ from services.remediation_controller.state_machine import (
     IncidentState,
     CrashRecoveryManager
 )
+from services.notification_service.dispatcher import (
+    NotificationDispatcher,
+    notification_dispatcher
+)
 
 logger = logging.getLogger("aether.remediation_controller")
 
@@ -22,9 +26,14 @@ class RemediationController:
     and runs the closed-loop verification / auto-rollback cycle.
     Enforces the formal Incident Lifecycle State Machine.
     """
-    def __init__(self, demo_service_url: Optional[str] = None):
+    def __init__(
+        self,
+        demo_service_url: Optional[str] = None,
+        dispatcher: Optional[NotificationDispatcher] = None
+    ):
         self.service_url = demo_service_url or os.getenv("DEMO_SERVICE_URL", "http://localhost:8000")
         self.recovery_manager = CrashRecoveryManager(db_client=db, controller=self)
+        self.notification_dispatcher = dispatcher or notification_dispatcher
 
     async def recover_in_flight_incidents(self) -> List[Dict[str, Any]]:
         """Scan and reconcile any unverified or stuck incidents from past crashes."""
@@ -109,6 +118,10 @@ class RemediationController:
                     rca_summary=spec.rationale,
                     confidence_score=spec.confidence_score
                 )
+                await self.notification_dispatcher.notify_awaiting_approval(
+                    spec=spec,
+                    reason=validation.reason
+                )
                 return {
                     "status": "REQUIRES_HUMAN_APPROVAL",
                     "state": IncidentState.AWAITING_APPROVAL.value,
@@ -127,6 +140,10 @@ class RemediationController:
             except Exception as e:
                 logger.debug(f"State transition note: {e}")
 
+            await self.notification_dispatcher.notify_escalated(
+                spec=spec,
+                reason=f"Policy violation: {validation.reason}"
+            )
             return {
                 "status": "REJECTED_BY_POLICY",
                 "state": IncidentState.ESCALATED.value,
@@ -199,6 +216,10 @@ class RemediationController:
             except Exception as e:
                 logger.debug(f"State transition note: {e}")
 
+            await self.notification_dispatcher.notify_escalated(
+                spec=spec,
+                reason="Target execution adapter returned failure"
+            )
             return {
                 "status": "EXECUTION_FAILED",
                 "state": IncidentState.ESCALATED.value,
@@ -237,6 +258,9 @@ class RemediationController:
                 confidence_score=spec.confidence_score
             )
             detector.resolve_incident(spec.target_service)
+            await self.notification_dispatcher.notify_resolved(
+                spec=spec
+            )
             return {
                 "remediation_id": spec.remediation_id,
                 "incident_id": spec.incident_id,
@@ -266,6 +290,10 @@ class RemediationController:
             logger.critical(
                 f"Remediation {spec.remediation_id} failed verification. "
                 f"Incident {spec.incident_id} escalated to REQUIRE_HUMAN_TRIAGE."
+            )
+            await self.notification_dispatcher.notify_escalated(
+                spec=spec,
+                reason="SLO error rate did not stabilize within verification window"
             )
             return {
                 "remediation_id": spec.remediation_id,
@@ -336,6 +364,10 @@ class RemediationController:
                 actor="system:controller",
                 reason="Operator-approved execution failed on target service"
             )
+            await self.notification_dispatcher.notify_escalated(
+                spec=spec,
+                reason="Operator-approved execution failed on target service"
+            )
             return {
                 "status": "EXECUTION_FAILED",
                 "state": IncidentState.ESCALATED.value,
@@ -360,6 +392,9 @@ class RemediationController:
             )
             await db.update_incident_status(spec.incident_id, "RESOLVED", spec.rationale, spec.confidence_score)
             detector.resolve_incident(spec.target_service)
+            await self.notification_dispatcher.notify_resolved(
+                spec=spec
+            )
             return {
                 "status": "RESOLVED",
                 "state": IncidentState.RESOLVED.value,
@@ -374,6 +409,10 @@ class RemediationController:
                 reason="Verification failed after operator-approved remediation"
             )
             await db.update_incident_status(spec.incident_id, "REQUIRE_HUMAN_TRIAGE")
+            await self.notification_dispatcher.notify_escalated(
+                spec=spec,
+                reason="Verification failed after operator-approved remediation"
+            )
             return {
                 "status": "REQUIRE_HUMAN_TRIAGE",
                 "state": IncidentState.ESCALATED.value,
@@ -396,6 +435,11 @@ class RemediationController:
             incident_id=incident_id,
             to_state=IncidentState.ESCALATED,
             actor=f"operator:{rejecter}",
+            reason=reason
+        )
+        await self.notification_dispatcher.notify_rejected(
+            incident_id=incident_id,
+            rejecter=rejecter,
             reason=reason
         )
         return {

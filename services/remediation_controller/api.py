@@ -8,12 +8,15 @@ Provides operators and SRE dashboards with first-class controls over:
 4. Triggering on-demand crash recovery reconciliation
 """
 
+import json
 import logging
+import urllib.parse
 from typing import Any, Dict, List, Optional
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 from services.ingestion_worker.db import db
+from services.notification_service.formatters import SlackFormatter
 from services.rca_agent.schema import RemediationActionType, RemediationSpec
 from services.remediation_controller.controller import remediation_controller
 from services.remediation_controller.state_machine import IncidentState
@@ -59,6 +62,38 @@ async def get_incident(incident_id: str):
     }
 
 
+def get_or_build_approval_spec(
+    incident_id: str,
+    inc: Dict[str, Any],
+    comment: Optional[str] = None
+) -> RemediationSpec:
+    """Retrieve cached pending spec or construct a safe rollback fallback spec."""
+    spec_dict = db.get_pending_remediation(incident_id)
+    if not spec_dict:
+        return RemediationSpec.create(
+            incident_id=incident_id,
+            action_type=RemediationActionType.ROLLBACK_DEPLOYMENT,
+            target_service=inc.get("service_name", "payment-service"),
+            parameters={"target_version": "v1.0.0"},
+            rationale=f"Operator approved remediation: {comment or 'Manual override'}",
+            confidence_score=1.0,
+            risk_level="LOW"
+        )
+    action_type = RemediationActionType(spec_dict.get("action_type", "ROLLBACK_DEPLOYMENT"))
+    return RemediationSpec(
+        remediation_id=spec_dict.get("remediation_id", f"REM-{incident_id}"),
+        incident_id=incident_id,
+        action_type=action_type,
+        target_service=spec_dict.get("target_service", "payment-service"),
+        parameters=spec_dict.get("parameters", {}),
+        rationale=spec_dict.get("rationale", comment or "Approved"),
+        confidence_score=1.0,
+        risk_level=spec_dict.get("risk_level", "LOW"),
+        requires_human_approval=False,
+        idempotency_key=spec_dict.get("idempotency_key", f"{incident_id}:approved")
+    )
+
+
 @router.post("/{incident_id}/approve")
 async def approve_incident(incident_id: str, req: IncidentApprovalRequest):
     """
@@ -82,34 +117,7 @@ async def approve_incident(incident_id: str, req: IncidentApprovalRequest):
             detail=f"Incident '{incident_id}' is in state '{curr_state.value}', not awaiting approval."
         )
 
-    # Fetch stored remediation spec or reconstruct from audit log
-    spec_dict = db.get_pending_remediation(incident_id)
-    if not spec_dict:
-        # Fallback to default safe rollback spec if not cached
-        spec = RemediationSpec.create(
-            incident_id=incident_id,
-            action_type=RemediationActionType.ROLLBACK_DEPLOYMENT,
-            target_service=inc.get("service_name", "payment-service"),
-            parameters={"target_version": "v1.0.0"},
-            rationale=f"Operator approved remediation: {req.comment or 'Manual override'}",
-            confidence_score=1.0,
-            risk_level="LOW"
-        )
-    else:
-        action_type = RemediationActionType(spec_dict.get("action_type", "ROLLBACK_DEPLOYMENT"))
-        spec = RemediationSpec(
-            remediation_id=spec_dict.get("remediation_id", f"REM-{incident_id}"),
-            incident_id=incident_id,
-            action_type=action_type,
-            target_service=spec_dict.get("target_service", "payment-service"),
-            parameters=spec_dict.get("parameters", {}),
-            rationale=spec_dict.get("rationale", req.comment or "Approved"),
-            confidence_score=1.0,
-            risk_level=spec_dict.get("risk_level", "LOW"),
-            requires_human_approval=False,
-            idempotency_key=spec_dict.get("idempotency_key", f"{incident_id}:approved")
-        )
-
+    spec = get_or_build_approval_spec(incident_id, inc, req.comment)
     result = await remediation_controller.execute_approved_remediation(spec, approver=req.approver)
     return {
         "incident_id": incident_id,
@@ -145,3 +153,125 @@ async def reconcile_crashed_incidents():
         "recovered_count": len(recovered),
         "details": recovered
     }
+
+
+# ----------------- ChatOps Interactive Router -----------------
+chatops_router = APIRouter(prefix="/api/v1/chatops", tags=["chatops"])
+
+
+class ChatOpsActionRequest(BaseModel):
+    incident_id: str = Field(description="Target incident ID")
+    action: str = Field(default="approve", description="Action: 'approve' or 'reject'")
+    operator: str = Field(default="chatops-operator", description="Operator identity or Slack user")
+    reason: Optional[str] = Field(default=None, description="Optional rationale")
+
+
+@chatops_router.post("/slack/interactive")
+async def handle_slack_interactive(request: Request):
+    """
+    Receives Slack Block Kit button clicks (Approve / Reject).
+    Supports both application/x-www-form-urlencoded (standard Slack) and application/json.
+    """
+    content_type = request.headers.get("content-type", "")
+    if "application/x-www-form-urlencoded" in content_type:
+        raw_body = await request.body()
+        decoded_str = raw_body.decode("utf-8")
+        parsed_form = urllib.parse.parse_qs(decoded_str)
+        payload_list = parsed_form.get("payload")
+        if not payload_list or not payload_list[0]:
+            raise HTTPException(status_code=400, detail="Missing 'payload' form field in Slack request")
+        try:
+            payload = json.loads(payload_list[0])
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Invalid JSON in Slack form payload: {e}")
+    else:
+        try:
+            payload = await request.json()
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Invalid JSON request body: {e}")
+
+    user_info = payload.get("user", {})
+    operator = user_info.get("username") or user_info.get("name") or user_info.get("id") or "slack-operator"
+    actions = payload.get("actions", [])
+
+    if not actions:
+        raise HTTPException(status_code=400, detail="No action found in Slack interactive payload")
+
+    action = actions[0]
+    action_id = action.get("action_id", "")
+    raw_val = action.get("value", "{}")
+    if isinstance(raw_val, str):
+        try:
+            val_dict = json.loads(raw_val)
+        except Exception:
+            val_dict = {"incident_id": raw_val}
+    else:
+        val_dict = raw_val
+
+    incident_id = val_dict.get("incident_id")
+    action_intent = val_dict.get("action")
+    if not action_intent:
+        if "approve" in action_id:
+            action_intent = "approve"
+        elif "reject" in action_id:
+            action_intent = "reject"
+        else:
+            action_intent = "approve"
+
+    if not incident_id:
+        raise HTTPException(status_code=400, detail="Could not determine incident_id from action value")
+
+    inc = await db.get_incident(incident_id)
+    if not inc:
+        raise HTTPException(status_code=404, detail=f"Incident '{incident_id}' not found")
+
+    if action_intent == "approve":
+        spec = get_or_build_approval_spec(incident_id, inc, comment="Approved via Slack interactive card")
+        result = await remediation_controller.execute_approved_remediation(spec, approver=f"slack:@{operator}")
+        status_msg = f"Remediation '{spec.action_type.value}' executed (Status: {result.get('status', 'OK')})"
+        return SlackFormatter.format_interactive_ack(incident_id, operator, "approve", status_msg)
+    else:
+        await remediation_controller.reject_pending_remediation(
+            incident_id=incident_id,
+            rejecter=f"slack:@{operator}",
+            reason="Rejected via Slack interactive card"
+        )
+        return SlackFormatter.format_interactive_ack(incident_id, operator, "reject", "Incident escalated to on-call engineer")
+
+
+@chatops_router.post("/webhook/action")
+async def handle_generic_webhook_action(req: ChatOpsActionRequest):
+    """
+    Generic ChatOps action endpoint for Discord bots, custom webhooks, or PagerDuty incident actions.
+    """
+    inc = await db.get_incident(req.incident_id)
+    if not inc:
+        raise HTTPException(status_code=404, detail=f"Incident '{req.incident_id}' not found")
+
+    action_lower = req.action.lower().strip()
+    if action_lower == "approve":
+        spec = get_or_build_approval_spec(req.incident_id, inc, comment=req.reason or "Approved via ChatOps webhook")
+        result = await remediation_controller.execute_approved_remediation(spec, approver=req.operator)
+        return {
+            "incident_id": req.incident_id,
+            "action": "APPROVED",
+            "operator": req.operator,
+            "result": result
+        }
+    elif action_lower == "reject":
+        result = await remediation_controller.reject_pending_remediation(
+            incident_id=req.incident_id,
+            rejecter=req.operator,
+            reason=req.reason or "Rejected via ChatOps webhook"
+        )
+        return {
+            "incident_id": req.incident_id,
+            "action": "REJECTED",
+            "operator": req.operator,
+            "result": result
+        }
+    else:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported ChatOps action '{req.action}'. Must be 'approve' or 'reject'."
+        )
